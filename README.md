@@ -7,7 +7,9 @@ lossless parser for ca65, the macro assembler of the
 [cc65](https://cc65.github.io/) suite, with its CPU modes as a profile axis,
 lowering to `asm198x-ir` for the Asm198x back end.
 
-Status: starting. The plan is
+Status: building. The lexer reads ca65's default mode, with every `.feature`
+off, and asks for each token in a mode so `.setcpu` and the features can join
+later. The parser, preprocessing and lowering come next. The plan is
 [`ca65-front-end.md`](https://github.com/lang198x/lang198x/blob/main/docs/plans/ca65-front-end.md)
 in the Lang198x hub. The reference is ca65 V2.19 at cc65 commit `8d86ca7`.
 
