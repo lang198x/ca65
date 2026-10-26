@@ -10,6 +10,12 @@ keywords = ["ca65", "6502", "assembler", "parser", "retro"]
 categories = ["parsing"]
 
 [dependencies]
+lang198x-syntax = "0.1.2"
+
+
+[dev-dependencies]
+# Generated tests only, as approved in the shared syntax layer decision.
+proptest = "1.12.0"
 
 [lints]
 workspace = true
