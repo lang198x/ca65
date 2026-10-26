@@ -147,9 +147,19 @@ kinds! {
     INDEX,
     /// A control command at the start of a statement, such as `.byte 1,2`.
     COMMAND,
-    /// A control command's arguments, kept as written until each command's
-    /// shape is read.
-    ARGS,
+    /// A call of a macro, with its `ARG`s.
+    MACRO_CALL,
+    /// A line inside a macro's definition, kept as tokens: ca65 reads it
+    /// only when the macro is called.
+    MACRO_BODY,
+    /// A macro's parameter names.
+    PARAMS,
+    /// One name in an `.import` or `.export` list, with any address size
+    /// and value.
+    ITEM,
+    /// A member of a `.struct`, `.union` or `.enum`: a name, then its
+    /// storage or value.
+    MEMBER,
     /// A number, a character constant, a string or `*`.
     LITERAL,
     /// A use of a symbol, perhaps qualified by scopes.

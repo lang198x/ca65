@@ -142,7 +142,7 @@ fn function(word: &str) -> Option<Arguments> {
         .map(|&(_, arguments)| arguments)
 }
 
-impl Parser<'_> {
+impl Parser<'_, '_> {
     pub(super) fn expression(&mut self) {
         self.trivia();
         if self.depth >= MAX_DEPTH {
@@ -231,6 +231,13 @@ impl Parser<'_> {
         }
     }
 
+    /// The function at the current token, such as a token function that
+    /// starts a statement, and its arguments.
+    pub(super) fn call_here(&mut self) {
+        let arguments = function(self.text_at(self.pos)).unwrap_or(Arguments::Mixed);
+        self.call(arguments);
+    }
+
     /// A function and its arguments.
     fn call(&mut self, arguments: Arguments) {
         self.builder.start_node(kinds::CALL_EXPR);
@@ -267,7 +274,7 @@ impl Parser<'_> {
 
     /// A braced list of tokens, or the tokens up to the next `,` or `)` that
     /// is not inside parentheses.
-    fn token_list(&mut self) {
+    pub(super) fn token_list(&mut self) {
         self.builder.start_node(kinds::TOKEN_LIST);
         if self.current() == Some(kinds::L_CURLY) {
             self.bump();

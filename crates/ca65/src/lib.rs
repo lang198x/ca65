@@ -4,11 +4,12 @@
 //! CPUs, from the 6502 to the 65816, so the CPU is an axis of the dialect's
 //! [`Profile`] rather than a dialect of its own.
 //!
-//! So far the crate has the lexer, in ca65's default mode, and the parser of
-//! lines, labels, assignments, instructions and expressions. The plan, in the
-//! Lang198x hub's `docs/plans/ca65-front-end.md`, adds control commands'
-//! shapes, macro calls, preprocessing and lowering to `asm198x-ir` in turn,
-//! each checked against ca65's own answers recorded in Asm198x.
+//! So far the crate has the lexer, in ca65's default mode, and the parser:
+//! lines, labels, assignments, instructions, expressions, control commands
+//! in their own shapes, and macro definitions and calls. The plan, in the
+//! Lang198x hub's `docs/plans/ca65-front-end.md`, adds preprocessing and
+//! lowering to `asm198x-ir` in turn, each checked against ca65's own answers
+//! recorded in Asm198x.
 //!
 //! ```
 //! use lang198x_ca65::{Mode, Profile, kinds, lex};
@@ -27,5 +28,5 @@ mod profile;
 
 pub use keywords::{CONTROL_COMMANDS, is_control_command};
 pub use lexer::{Lexed, Lexer, Token, lex};
-pub use parser::{ParseError, parse};
+pub use parser::{Context, ParseError, parse, parse_with};
 pub use profile::{Cpu, Mode, Profile};
