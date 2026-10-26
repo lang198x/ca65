@@ -1,0 +1,32 @@
+# lang198x-ca65 — the ca65 assembler family for Lang198x.
+#
+# One hand-written parser for ca65, the cc65 suite's macro assembler, with its
+# CPU modes as a profile axis, lowering to asm198x-ir for the Asm198x back end.
+# The design is in Lang198x's shared syntax layer decision and the 198x
+# decision moving assembly source to Lang198x; the plan is Lang198x's
+# docs/plans/ca65-front-end.md.
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+license = "GPL-2.0-or-later"
+repository = "https://github.com/lang198x/ca65"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+missing_docs = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+unwrap_used = "deny"
+
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

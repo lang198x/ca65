@@ -1,0 +1,28 @@
+name: Release-plz
+
+# Tags merged releases, then opens or updates the next release PR, using the
+# workflow every 198x Rust repo shares (stevehill1981/198x-workflows).
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+  # crates.io Trusted Publishing matches this file's name, so keep it.
+  id-token: write
+
+jobs:
+  release-plz:
+    name: Release-plz
+    uses: stevehill1981/198x-workflows/.github/workflows/release-plz.yml@v1
+    # Named, not `inherit`: GitHub passes inherited secrets only within one
+    # organisation or enterprise, and the shared workflow is in a personal
+    # account. A secret this org lacks is passed empty.
+    secrets:
+      RELEASE_PLZ_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      DISCORD_RELEASE_WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
+      DISCORD_RELEASE_WEBHOOK_ALL: ${{ secrets.DISCORD_RELEASE_WEBHOOK_ALL }}
+    with:
+      announce: true
