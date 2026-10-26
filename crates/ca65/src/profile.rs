@@ -28,6 +28,31 @@ impl Cpu {
         }
     }
 
+    /// The mnemonics of this CPU's instructions, in upper case. ca65 ignores
+    /// their case.
+    ///
+    /// For the 6502, the 56 in ca65 V2.19's `InsTab6502`.
+    #[must_use]
+    pub const fn mnemonics(self) -> &'static [&'static str] {
+        match self {
+            Self::Mos6502 => &[
+                "ADC", "AND", "ASL", "BCC", "BCS", "BEQ", "BIT", "BMI", "BNE", "BPL", "BRK", "BVC",
+                "BVS", "CLC", "CLD", "CLI", "CLV", "CMP", "CPX", "CPY", "DEC", "DEX", "DEY", "EOR",
+                "INC", "INX", "INY", "JMP", "JSR", "LDA", "LDX", "LDY", "LSR", "NOP", "ORA", "PHA",
+                "PHP", "PLA", "PLP", "ROL", "ROR", "RTI", "RTS", "SBC", "SEC", "SED", "SEI", "STA",
+                "STX", "STY", "TAX", "TAY", "TSX", "TXA", "TXS", "TYA",
+            ],
+        }
+    }
+
+    /// Whether `word` is one of this CPU's mnemonics, in any case.
+    #[must_use]
+    pub fn is_mnemonic(self, word: &str) -> bool {
+        self.mnemonics()
+            .iter()
+            .any(|mnemonic| mnemonic.eq_ignore_ascii_case(word))
+    }
+
     /// The names ca65 reads as registers on this CPU, in upper case. ca65
     /// ignores their case.
     ///
@@ -123,5 +148,14 @@ mod tests {
         let mode = Mode::of(Profile::CA65_2_19_6502);
         assert_eq!(mode.cpu(), Cpu::Mos6502);
         assert_eq!(mode.cpu().registers(), ["A", "X", "Y"]);
+    }
+
+    #[test]
+    fn the_6502_has_56_mnemonics_in_any_case() {
+        let cpu = Cpu::Mos6502;
+        assert_eq!(cpu.mnemonics().len(), 56);
+        assert!(cpu.mnemonics().windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(cpu.is_mnemonic("lda") && cpu.is_mnemonic("LdA"));
+        assert!(!cpu.is_mnemonic("bra") && !cpu.is_mnemonic("ld"));
     }
 }
