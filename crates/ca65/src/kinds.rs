@@ -117,6 +117,57 @@ kinds! {
     GE,
     /// `>>`
     SHR,
+
+    // Nodes.
+
+    /// A whole source file: one `LINE` for each line of text.
+    SOURCE_FILE,
+    /// One line of source, with its line ending.
+    LINE,
+    /// A named label: its `NAME` and colon, as in `loop:`.
+    LABEL,
+    /// An unnamed label: `:` alone, or `@:`.
+    UNNAMED_LABEL,
+    /// A symbol set to a value: `name = value`, `name := value` or
+    /// `name .set value`.
+    ASSIGNMENT,
+    /// A name being defined, perhaps qualified by scopes, as in `outer::x`.
+    NAME,
+    /// A machine instruction: its mnemonic and any `OPERAND`.
+    INSTRUCTION,
+    /// An instruction's operand.
+    OPERAND,
+    /// `#value`.
+    IMMEDIATE,
+    /// `(address)`, `(address,x)` or `(address),y`.
+    INDIRECT,
+    /// `[address]` or `[address],y`.
+    LONG_INDIRECT,
+    /// `,x`, `,y` or `,s` after an address.
+    INDEX,
+    /// A control command at the start of a statement, such as `.byte 1,2`.
+    COMMAND,
+    /// A control command's arguments, kept as written until each command's
+    /// shape is read.
+    ARGS,
+    /// A number, a character constant, a string or `*`.
+    LITERAL,
+    /// A use of a symbol, perhaps qualified by scopes.
+    NAME_REF,
+    /// A reference to an unnamed label, such as `:+`.
+    UNNAMED_REF,
+    /// `(value)` inside an expression.
+    PAREN_EXPR,
+    /// A prefix operator and what it applies to.
+    UNARY_EXPR,
+    /// Two values and the operator between them.
+    BIN_EXPR,
+    /// A function such as `.lobyte(value)`, or a value word such as `.time`.
+    CALL_EXPR,
+    /// One argument of a function.
+    ARG,
+    /// Tokens taken as they are, such as `{1, 2}` in `.tcount({1, 2})`.
+    TOKEN_LIST,
 }
 
 /// The name of one of this crate's kinds, such as `"NUMBER"`, for tests and
@@ -141,9 +192,10 @@ mod tests {
     #[test]
     fn kinds_are_numbered_in_order_and_named() {
         assert_eq!(name(IDENT), Some("IDENT"));
-        assert_eq!(name(SHR), Some("SHR"));
+        assert_eq!(name(SOURCE_FILE), Some("SOURCE_FILE"));
+        assert_eq!(name(TOKEN_LIST), Some("TOKEN_LIST"));
         assert_eq!(
-            usize::from(SHR.get() - IDENT.get()) + 1,
+            usize::from(TOKEN_LIST.get() - IDENT.get()) + 1,
             NAMES.len(),
             "the last kind is numbered one below the table's length"
         );
