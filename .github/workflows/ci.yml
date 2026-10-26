@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Format, Clippy, coverage (the Linux test run), a build and test on macOS
+  # and Windows, and workflow lint, shared by every 198x Rust repo
+  # (stevehill1981/198x-workflows).
+  rust:
+    name: Rust
+    uses: stevehill1981/198x-workflows/.github/workflows/rust-ci.yml@v1
+    with:
+      # The 6502 and NES curriculum will rest on this parser, as the Z80 one
+      # rests on lang198x/z80-asm. Ratchet up as tests grow; never down.
+      coverage-floor: 95

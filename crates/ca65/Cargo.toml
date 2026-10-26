@@ -1,0 +1,15 @@
+[package]
+name = "lang198x-ca65"
+description = "The ca65 assembler family for Lang198x: one lossless parser for the cc65 suite's macro assembler, its CPU modes as a profile axis, lowering to asm198x-ir."
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["ca65", "6502", "assembler", "parser", "retro"]
+categories = ["parsing"]
+
+[dependencies]
+
+[lints]
+workspace = true
