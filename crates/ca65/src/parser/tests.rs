@@ -5,13 +5,15 @@ use proptest::prelude::*;
 
 use super::*;
 
-fn parsed(text: &str) -> Parse {
+mod commands;
+
+pub(super) fn parsed(text: &str) -> Parse {
     parse(text, Profile::CA65_2_19_6502).expect("short text always parses")
 }
 
 /// The tree as `(KIND children...)`, without whitespace, so tests read like
 /// the source.
-fn render(node: &SyntaxNode) -> String {
+pub(super) fn render(node: &SyntaxNode) -> String {
     let parts: Vec<String> = node
         .children()
         .filter_map(|child| match child {
@@ -32,7 +34,7 @@ fn kind_name(kind: SyntaxKind) -> &'static str {
 }
 
 /// The first line of `text`, rendered.
-fn line(text: &str) -> String {
+pub(super) fn line(text: &str) -> String {
     let parse = parsed(text);
     let first = parse
         .tree()
@@ -45,7 +47,7 @@ fn line(text: &str) -> String {
 }
 
 /// The diagnostics of `text` as `start..end message`.
-fn problems(text: &str) -> Vec<String> {
+pub(super) fn problems(text: &str) -> Vec<String> {
     parsed(text)
         .diagnostics()
         .iter()
@@ -169,12 +171,11 @@ fn a_mnemonic_is_never_a_label() {
 }
 
 #[test]
-fn a_control_command_keeps_its_arguments() {
+fn a_label_before_a_control_command() {
     assert_eq!(
         line("tab: .byte 1, \"a\" ; data"),
-        "(LINE (LABEL (NAME tab) :) (COMMAND .byte (ARGS 1 , \"a\")) ; data)"
+        "(LINE (LABEL (NAME tab) :) (COMMAND .byte (LITERAL 1) , (LITERAL \"a\")) ; data)"
     );
-    assert_eq!(line(".endif"), "(LINE (COMMAND .endif))");
 }
 
 #[test]

@@ -19,11 +19,25 @@
 //! Where a line does not fit, the parser records a diagnostic, wraps what it
 //! could not read in an `ERROR` node, and carries on with the next line.
 //!
-//! So far a control command keeps its arguments as written, in an `ARGS`
-//! node, and a name that is neither a label nor an assignment is refused, as
-//! ca65 refuses it when no macro has that name. Each command's own shape and
-//! macro calls come next.
+//! Each control command is read in its own shape, from ca65's `pseudo.c`.
+//! A macro's body is kept as tokens, one `MACRO_BODY` per line, because ca65
+//! reads it only when the macro is called. Inside a `.struct` or `.union`, a
+//! name before a storage command is a member without a colon, and inside an
+//! `.enum` a line is a member name with an optional value.
+//!
+//! A name at the start of a statement calls a macro if one has that name.
+//! ca65 checks for a macro before it reads a label, so `m:` calls `m`. The
+//! parser knows the macros and define-style macros this text defines, and
+//! asks a [`Context`] about any other name. [`parse`] answers for a text read
+//! on its own: before any `.include` or `.macpack`, no other macro exists;
+//! after one, a name that cannot be a label or an assignment is read as a
+//! call, with an *unknown* diagnostic.
+//!
+//! The parser checks every line. ca65 does not read lines after `.end`,
+//! inside a false `.if` or in a `.repeat` that runs no times; deciding which
+//! lines count is the job of preprocessing.
 
+use std::collections::HashSet;
 use std::fmt;
 
 use lang198x_syntax::{
@@ -33,6 +47,7 @@ use lang198x_syntax::{
 
 use crate::{Lexer, Mode, Profile, kinds};
 
+mod commands;
 mod expression;
 
 /// How deeply expressions may nest before the rest of the line is skipped.
@@ -61,7 +76,30 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// Parses `text` as ca65 source under `profile`.
+/// What the parser may ask about the program around the text it reads.
+///
+/// A file read in by `.include`, or a package read in by `.macpack`, can
+/// define macros the text itself cannot show. The front end that reads the
+/// whole program answers for them.
+pub trait Context {
+    /// Whether `name` is a macro defined outside this text by the time the
+    /// current line is read, or `None` if this context cannot tell. The
+    /// parser asks only about names that are not mnemonics and that this
+    /// text has not defined as a macro, and it may ask more than once.
+    fn is_macro(&mut self, name: &str) -> Option<bool>;
+}
+
+/// The context of a text read on its own, which cannot tell about any macro
+/// defined outside it.
+struct Standalone;
+
+impl Context for Standalone {
+    fn is_macro(&mut self, _name: &str) -> Option<bool> {
+        None
+    }
+}
+
+/// Parses `text` as ca65 source under `profile`, on its own.
 ///
 /// ```
 /// use lang198x_ca65::{Profile, kinds, parse};
@@ -80,6 +118,43 @@ impl std::error::Error for ParseError {}
 /// Fails only when no tree can be built at all, which needs text longer than
 /// 4 GiB.
 pub fn parse(text: &str, profile: Profile) -> Result<Parse, ParseError> {
+    parse_with(text, profile, &mut Standalone)
+}
+
+/// Parses `text` like [`parse`], asking `context` about macros defined
+/// outside it.
+///
+/// ```
+/// use lang198x_ca65::{Context, Profile, kinds, parse_with};
+///
+/// struct Included;
+///
+/// impl Context for Included {
+///     fn is_macro(&mut self, name: &str) -> Option<bool> {
+///         Some(name == "blink")
+///     }
+/// }
+///
+/// let parse = parse_with("blink 3\n", Profile::CA65_2_19_6502, &mut Included)?;
+/// assert!(parse.diagnostics().is_empty());
+/// let call = parse
+///     .tree()
+///     .root()
+///     .descendants()
+///     .filter_map(|e| e.into_node())
+///     .find(|n| n.kind() == kinds::MACRO_CALL);
+/// assert!(call.is_some());
+/// # Ok::<(), lang198x_ca65::ParseError>(())
+/// ```
+///
+/// # Errors
+///
+/// As for [`parse`].
+pub fn parse_with(
+    text: &str,
+    profile: Profile,
+    context: &mut dyn Context,
+) -> Result<Parse, ParseError> {
     let mut parser = Parser {
         text,
         lexer: Lexer::new(text),
@@ -92,6 +167,12 @@ pub fn parse(text: &str, profile: Profile) -> Result<Parse, ParseError> {
         name_start: 0,
         builder: TreeBuilder::new(text),
         diagnostics: Vec::new(),
+        context,
+        macros: HashSet::new(),
+        defines: HashSet::new(),
+        after_include: false,
+        in_macro_body: false,
+        blocks: Vec::new(),
     };
     parser.source_file();
     let Parser {
@@ -107,7 +188,29 @@ pub fn parse(text: &str, profile: Profile) -> Result<Parse, ParseError> {
     Parse::new(tree, diagnostics).map_err(ParseError::Diagnostic)
 }
 
-struct Parser<'t> {
+/// A block whose lines read differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Block {
+    /// `.proc` or `.scope`, whose lines are ordinary.
+    Scope,
+    /// `.struct` or `.union`, whose lines may be members without colons.
+    Struct,
+    /// `.enum`, whose lines are members.
+    Enum,
+}
+
+/// What a name at the start of a statement is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Macro {
+    /// A macro or define-style macro, so the statement calls it.
+    Known,
+    /// Perhaps a macro defined outside the text: only a front end could say.
+    Unknown,
+    /// Not a macro.
+    Not,
+}
+
+struct Parser<'t, 'c> {
     text: &'t str,
     lexer: Lexer<'t>,
     /// The mode the next line is read in.
@@ -126,9 +229,21 @@ struct Parser<'t> {
     name_start: usize,
     builder: TreeBuilder<'t>,
     diagnostics: Vec<Diagnostic>,
+    context: &'c mut dyn Context,
+    /// Macros this text has defined so far. Names are case-sensitive.
+    macros: HashSet<String>,
+    /// Define-style macros this text has defined so far.
+    defines: HashSet<String>,
+    /// Whether an `.include` or `.macpack` has been read, so a macro might be
+    /// defined that this text cannot see.
+    after_include: bool,
+    /// Whether the lines being read are a macro's body.
+    in_macro_body: bool,
+    /// The blocks open at this line, innermost last.
+    blocks: Vec<Block>,
 }
 
-impl Parser<'_> {
+impl Parser<'_, '_> {
     fn source_file(&mut self) {
         self.builder.start_node(kinds::SOURCE_FILE);
         while self.read_line() {
@@ -158,9 +273,20 @@ impl Parser<'_> {
     fn line(&mut self) {
         self.builder.start_node(kinds::LINE);
         self.trivia();
-        self.unnamed_label();
-        if self.definition() {
-            self.statement();
+        if self.in_macro_body {
+            self.macro_body_line();
+        } else if self.blocks.last() == Some(&Block::Enum) && self.at(kinds::IDENT) {
+            self.enum_member();
+        } else if self.blocks.last() == Some(&Block::Struct)
+            && self.at(kinds::IDENT)
+            && self.peek_nth(1) == Some(kinds::CONTROL)
+        {
+            self.struct_member();
+        } else {
+            self.unnamed_label();
+            if self.definition() {
+                self.statement();
+            }
         }
         if !self.at_line_end() {
             self.error_to_line_end("expected the end of the line");
@@ -168,6 +294,46 @@ impl Parser<'_> {
         // Whatever is left is trivia, a comment and the line ending.
         while self.pos < self.kinds.len() {
             self.bump();
+        }
+        self.builder.finish_node();
+    }
+
+    /// A line of a macro's body, or the `.endmacro` that ends it. ca65 ends
+    /// a body only at `.endmacro` first on its line.
+    fn macro_body_line(&mut self) {
+        let ends = self.at(kinds::CONTROL)
+            && [".endmacro", ".endmac"]
+                .iter()
+                .any(|w| w.eq_ignore_ascii_case(self.next_text()));
+        if ends {
+            self.in_macro_body = false;
+            self.builder.start_node(kinds::COMMAND);
+            self.bump();
+            self.builder.finish_node();
+        } else if !self.at_line_end() {
+            self.builder.start_node(kinds::MACRO_BODY);
+            while !self.at_line_end() {
+                self.bump_next();
+            }
+            self.builder.finish_node();
+        }
+    }
+
+    /// `name .word` inside a `.struct`: a member, then its storage.
+    fn struct_member(&mut self) {
+        self.builder.start_node(kinds::MEMBER);
+        self.name(kinds::NAME);
+        self.command();
+        self.builder.finish_node();
+    }
+
+    /// `name` or `name = value` inside an `.enum`.
+    fn enum_member(&mut self) {
+        self.builder.start_node(kinds::MEMBER);
+        self.name(kinds::NAME);
+        if self.next_kind() == Some(kinds::EQ) {
+            self.bump_next();
+            self.expression();
         }
         self.builder.finish_node();
     }
@@ -199,7 +365,19 @@ impl Parser<'_> {
     fn definition(&mut self) -> bool {
         let defines = match self.next_kind() {
             Some(kinds::CHEAP_IDENT | kinds::COLON_COLON) => true,
-            Some(kinds::IDENT) => !self.is_mnemonic(self.next_text()),
+            Some(kinds::IDENT) if self.is_mnemonic(self.next_text()) => false,
+            Some(kinds::IDENT) => match self.next_macro_kind() {
+                Macro::Known => false,
+                // A name that can only be a label or an assignment is one;
+                // anything else may call a macro from an included file.
+                Macro::Unknown => {
+                    matches!(
+                        self.peek_nth(1),
+                        Some(kinds::COLON | kinds::EQ | kinds::COLON_EQ)
+                    ) || self.peek_is_set(1)
+                }
+                Macro::Not => true,
+            },
             _ => false,
         };
         if !defines {
@@ -217,7 +395,7 @@ impl Parser<'_> {
                 self.builder.finish_node();
                 false
             }
-            Some(kinds::CONTROL) if self.next_text().eq_ignore_ascii_case(".set") => {
+            Some(kinds::CONTROL) if self.peek_is_set(0) => {
                 self.builder.start_node_at(checkpoint, kinds::ASSIGNMENT);
                 self.bump_next();
                 self.expression();
@@ -283,22 +461,67 @@ impl Parser<'_> {
             None | Some(SyntaxKind::COMMENT | SyntaxKind::NEWLINE) => {}
             Some(kinds::CONTROL) => self.command(),
             Some(kinds::IDENT) if self.is_mnemonic(self.next_text()) => self.instruction(),
+            Some(kinds::IDENT) => match self.next_macro_kind() {
+                Macro::Known => self.macro_call(),
+                Macro::Unknown => {
+                    let start = self.offset(self.nth_index(0).unwrap_or(self.pos));
+                    let name = self.next_text().to_owned();
+                    let message = format!(
+                        "`{name}` is read as a macro call; only a file that `.include` or \
+                         `.macpack` reads in could define it"
+                    );
+                    let range = self.range(start, start + name.len());
+                    self.diagnostics
+                        .push(Diagnostic::new(DiagnosticKind::Unknown, range, message));
+                    self.macro_call();
+                }
+                Macro::Not => self.error_to_line_end("expected a mnemonic"),
+            },
             Some(_) => self.error_to_line_end("expected a mnemonic"),
         }
     }
 
-    /// A control command, with its arguments kept as written.
-    fn command(&mut self) {
+    /// Whether the next name, at the start of a statement and not a
+    /// mnemonic, calls a macro.
+    fn next_macro_kind(&mut self) -> Macro {
+        let name = self.next_text().to_owned();
+        if self.macros.contains(&name) || self.defines.contains(&name) {
+            return Macro::Known;
+        }
+        match self.context.is_macro(&name) {
+            Some(true) => Macro::Known,
+            Some(false) => Macro::Not,
+            None if self.after_include => Macro::Unknown,
+            None => Macro::Not,
+        }
+    }
+
+    /// A macro's name and its arguments. As measured on ca65, arguments are
+    /// split at every comma outside braces: parentheses do not protect a
+    /// comma, and braces around a whole argument let it hold commas.
+    fn macro_call(&mut self) {
         self.trivia();
-        self.builder.start_node(kinds::COMMAND);
+        self.builder.start_node(kinds::MACRO_CALL);
         self.bump();
         if !self.at_line_end() {
-            self.trivia();
-            self.builder.start_node(kinds::ARGS);
-            while !self.at_line_end() {
+            loop {
+                self.trivia();
+                self.builder.start_node(kinds::ARG);
+                if self.current() == Some(kinds::L_CURLY) {
+                    self.token_list();
+                } else if !self.at_line_end() && !self.at(kinds::COMMA) {
+                    self.builder.start_node(kinds::TOKEN_LIST);
+                    while !self.at_line_end() && !self.at(kinds::COMMA) {
+                        self.bump_next();
+                    }
+                    self.builder.finish_node();
+                }
+                self.builder.finish_node();
+                if !self.at(kinds::COMMA) {
+                    break;
+                }
                 self.bump_next();
             }
-            self.builder.finish_node();
         }
         self.builder.finish_node();
     }
@@ -439,6 +662,17 @@ impl Parser<'_> {
             .nth(n)
     }
 
+    fn at(&self, kind: SyntaxKind) -> bool {
+        self.next_kind() == Some(kind)
+    }
+
+    /// Whether the `n`th token from here that is not whitespace is `.set`.
+    fn peek_is_set(&self, n: usize) -> bool {
+        self.nth_index(n).is_some_and(|i| {
+            self.kinds[i] == kinds::CONTROL && self.text_at(i).eq_ignore_ascii_case(".set")
+        })
+    }
+
     fn next_kind(&self) -> Option<SyntaxKind> {
         self.peek_nth(0)
     }
@@ -524,12 +758,16 @@ impl Parser<'_> {
     }
 
     fn report(&mut self, start: usize, end: usize, message: &str) {
+        let range = self.range(start, end);
+        self.diagnostics
+            .push(Diagnostic::new(DiagnosticKind::Invalid, range, message));
+    }
+
+    fn range(&self, start: usize, end: usize) -> TextRange {
         // Offsets come from the lexer's tokens, which all fit in 32 bits.
         let start = TextSize::try_from(start).unwrap_or(TextSize::ZERO);
         let end = TextSize::try_from(end).unwrap_or(start);
-        let range = TextRange::new(start, end).unwrap_or(TextRange::empty(start));
-        self.diagnostics
-            .push(Diagnostic::new(DiagnosticKind::Invalid, range, message));
+        TextRange::new(start, end).unwrap_or(TextRange::empty(start))
     }
 
     fn is_mnemonic(&self, word: &str) -> bool {
