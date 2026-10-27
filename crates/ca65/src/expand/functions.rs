@@ -18,7 +18,7 @@
 use lang198x_syntax::{DiagnosticKind, Origin, Span, SyntaxKind};
 
 use super::defines::{Piece, Problem};
-use crate::{Mode, kinds, lex};
+use crate::kinds;
 
 /// The token functions, in lower case.
 const FUNCTIONS: &[&str] = &[
@@ -43,14 +43,9 @@ pub(super) fn any(pieces: &[Piece]) -> bool {
 
 /// Runs the token functions in `pieces`. `evaluate` gives the value of the
 /// constant expression made of the pieces it is passed.
-pub(super) fn run(
-    pieces: Vec<Piece>,
-    mode: Mode,
-    evaluate: &mut Evaluate<'_>,
-) -> Result<Vec<Piece>, Problem> {
+pub(super) fn run(pieces: Vec<Piece>, evaluate: &mut Evaluate<'_>) -> Result<Vec<Piece>, Problem> {
     let mut stream = Stream {
         stack: vec![pieces.into_iter()],
-        mode,
         evaluate,
     };
     let mut out = Vec::new();
@@ -62,7 +57,6 @@ pub(super) fn run(
 
 struct Stream<'e> {
     stack: Vec<std::vec::IntoIter<Piece>>,
-    mode: Mode,
     evaluate: &'e mut Evaluate<'e>,
 }
 
@@ -276,19 +270,12 @@ impl Stream<'_> {
         if !valid {
             return Err(call.problem(format!("`{name}` is not a valid name for `.ident`")));
         }
-        let lexed = lex(name, self.mode);
-        let kind = match lexed.tokens() {
-            [token] if matches!(token.kind(), kinds::IDENT | kinds::CHEAP_IDENT) => token.kind(),
-            _ => {
-                return Err(Problem {
-                    site: call.site,
-                    message: format!(
-                        "`.ident` making `{name}`, which reads as a register or keyword \
-                         here, is not supported"
-                    ),
-                    kind: DiagnosticKind::Unsupported,
-                });
-            }
+        // The name is handed on as a name, not lexed again, so one spelt
+        // like a register stays a name, as in ca65.
+        let kind = if name.starts_with('@') {
+            kinds::CHEAP_IDENT
+        } else {
+            kinds::IDENT
         };
         Ok(call.made(name.to_owned(), kind))
     }

@@ -18,6 +18,13 @@ const MEASURED: &[(&str, Want)] = &[
     (".ident(\"@x\"):\n", Bytes(&[])),
     (".ident(\"z\"):\n.word z\n", Bytes(&[0, 0])),
     ("q=5\n.byte .ident(\"q\")\n", Bytes(&[5])),
+    // `.ident` makes a name, even one spelt like a register.
+    (".ident(\"A\")=7\n.byte .ident(\"A\")\n", Bytes(&[7])),
+    (".ident(\"A\"): .byte 7\n", Bytes(&[7])),
+    (
+        ".repeat 1,.ident(\"A\")\n.byte 7\n.endrepeat\n",
+        Bytes(&[7]),
+    ),
     (
         "q1=3\n.byte .ident(.sprintf(\"%s%d\", \"q\", 1))\n",
         Bytes(&[3]),
@@ -161,12 +168,10 @@ fn kinds(source: &str) -> Vec<DiagnosticKind> {
 
 #[test]
 fn results_this_syntax_cannot_write_are_unsupported() {
-    // ca65 makes a string holding a quote, and `.ident("x")` is the symbol
-    // `x`; here `x` would read as the register.
+    // ca65 makes a string holding a quote, or the byte $FF.
     for source in [
         ".byte .sprintf(\"%c\", 34)\n",
         ".byte .sprintf(\"%c\", 255)\n",
-        "q=1\n.byte .ident(\"x\")\n",
     ] {
         assert_eq!(kinds(source), [DiagnosticKind::Unsupported], "{source:?}");
     }

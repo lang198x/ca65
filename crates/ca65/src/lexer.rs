@@ -42,6 +42,11 @@ pub struct Token {
 }
 
 impl Token {
+    /// A token of `kind` covering `len` bytes, for text the expander made.
+    pub(crate) fn new(kind: SyntaxKind, len: TextSize) -> Self {
+        Self { kind, len }
+    }
+
     /// Returns the token's kind, such as [`kinds::NUMBER`].
     #[must_use]
     pub fn kind(self) -> SyntaxKind {
@@ -431,3 +436,36 @@ fn line_rest(rest: &str) -> usize {
 
 #[cfg(test)]
 mod tests;
+
+/// Where the parser gets its tokens: the lexer, for text a person wrote, or
+/// the tokens the expander made, which are not lexed again.
+pub(crate) trait TokenSource {
+    /// The next token, read in `mode` if it is lexed.
+    fn next_token(&mut self, mode: Mode) -> Option<Token>;
+
+    /// The problems found in the tokens so far.
+    fn diagnostics(&self) -> &[Diagnostic];
+}
+
+impl TokenSource for Lexer<'_> {
+    fn next_token(&mut self, mode: Mode) -> Option<Token> {
+        Lexer::next_token(self, mode)
+    }
+
+    fn diagnostics(&self) -> &[Diagnostic] {
+        Lexer::diagnostics(self)
+    }
+}
+
+/// Tokens already made, in order. They keep the kinds they were made with.
+pub(crate) struct Prepared(pub(crate) std::vec::IntoIter<Token>);
+
+impl TokenSource for Prepared {
+    fn next_token(&mut self, _: Mode) -> Option<Token> {
+        self.0.next()
+    }
+
+    fn diagnostics(&self) -> &[Diagnostic] {
+        &[]
+    }
+}

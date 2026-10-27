@@ -512,4 +512,35 @@ proptest! {
             prop_assert!(diagnostic.range().slice(&text).is_some());
         }
     }
+
+    /// Tokens prepared from the lexer give the tree the lexer gives, and the
+    /// parser's own problems: an expansion parsed from its tokens reads as it
+    /// would have read as text, unless a token was made.
+    #[test]
+    fn prepared_tokens_parse_as_the_text_does(text in "\\PC{0,40}|[ -~\\t\\r\\n]{0,80}") {
+        let profile = Profile::CA65_2_19_6502;
+        let lexed = crate::lex(&text, Mode::of(profile));
+        let from_text = parsed(&text);
+        let prepared = parse_prepared(&text, lexed.tokens().to_vec(), profile, &mut Standalone)
+            .expect("short text always parses");
+        let shape = |parse: &Parse| -> Vec<(SyntaxKind, TextRange)> {
+            parse
+                .tree()
+                .root()
+                .descendants()
+                .map(|element| match element {
+                    SyntaxElement::Node(node) => (node.kind(), node.text_range()),
+                    SyntaxElement::Token(token) => (token.kind(), token.text_range()),
+                    _ => (SyntaxKind::ERROR, TextRange::empty(TextSize::ZERO)),
+                })
+                .collect()
+        };
+        prop_assert_eq!(shape(&prepared), shape(&from_text));
+        let own: Vec<&Diagnostic> = from_text
+            .diagnostics()
+            .iter()
+            .filter(|d| !lexed.diagnostics().contains(d))
+            .collect();
+        prop_assert_eq!(prepared.diagnostics().iter().collect::<Vec<_>>(), own);
+    }
 }

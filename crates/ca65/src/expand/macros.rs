@@ -11,10 +11,9 @@
 //! A missing argument is empty. Parameter names are case-sensitive, as in
 //! ca65.
 
-use lang198x_syntax::{
-    ExpansionBuilder, Origin, Span, SyntaxElement, SyntaxKind, SyntaxToken, TextId,
-};
+use lang198x_syntax::{Origin, Span, SyntaxElement, SyntaxKind, SyntaxToken, TextId};
 
+use super::made::Made;
 use crate::ast::{Line, MacroCall, Statement, View};
 use crate::kinds;
 
@@ -63,16 +62,13 @@ impl Macro {
         self.locals.len()
     }
 
-    /// The text of a call, with its pieces' origins. `first_local` numbers
-    /// the call's first local name, so each call's names are its own.
-    pub(super) fn expand(
-        &self,
-        call: &MacroCall,
-        call_text: TextId,
-        first_local: usize,
-    ) -> ExpansionBuilder {
+    /// The text of a call, with its pieces' origins and tokens. `first_local`
+    /// numbers the call's first local name, so each call's names are its own.
+    pub(super) fn expand(&self, call: &MacroCall, call_text: TextId, first_local: usize) -> Made {
         let call_site = Span::new(call_text, call.syntax().text_range());
-        let args: Vec<Option<(String, Span)>> = call
+        // Each argument's tokens, from its first to its last, with the space
+        // between them, as they were made.
+        let args: Vec<Option<Vec<SyntaxToken>>> = call
             .args()
             .map(|arg| {
                 let tokens: Vec<SyntaxToken> = arg
@@ -80,15 +76,17 @@ impl Macro {
                     .map(|list| list.contents().collect())
                     .unwrap_or_default();
                 let (first, last) = (tokens.first()?, tokens.last()?);
-                let range = first.text_range().cover(last.text_range());
+                let (start, end) = (first.text_range().start(), last.text_range().end());
                 let root = call.syntax().ancestors().last()?;
-                Some((
-                    range.slice(root.text())?.to_owned(),
-                    Span::new(call_text, range),
-                ))
+                Some(
+                    root.descendants()
+                        .filter_map(SyntaxElement::into_token)
+                        .filter(|t| t.text_range().start() >= start && t.text_range().end() <= end)
+                        .collect(),
+                )
             })
             .collect();
-        let mut builder = ExpansionBuilder::new();
+        let mut builder = Made::new();
         for (line, text) in &self.body {
             for token in line
                 .syntax()
@@ -96,9 +94,10 @@ impl Macro {
                 .filter_map(SyntaxElement::into_token)
             {
                 let from = Span::new(*text, token.text_range());
-                let synthesised = |text: &str, builder: &mut ExpansionBuilder| {
+                let synthesised = |text: &str, kind: SyntaxKind, builder: &mut Made| {
                     builder.push(
                         text,
+                        kind,
                         Origin::Synthesised {
                             inputs: from,
                             call_site,
@@ -108,14 +107,9 @@ impl Macro {
                 if token.kind() == kinds::IDENT
                     && let Some(index) = self.params.iter().position(|p| p == token.text())
                 {
-                    if let Some(Some((text, span))) = args.get(index) {
-                        builder.push(
-                            text,
-                            Origin::Expanded {
-                                from: *span,
-                                call_site,
-                            },
-                        );
+                    for arg in args.get(index).into_iter().flatten().flatten() {
+                        let from = Span::new(call_text, arg.text_range());
+                        builder.token(arg, Origin::Expanded { from, call_site });
                     }
                 } else if matches!(token.kind(), kinds::IDENT | kinds::CHEAP_IDENT)
                     && let Some(index) = self.locals.iter().position(|l| l == token.text())
@@ -126,13 +120,13 @@ impl Macro {
                         ""
                     };
                     let name = format!("{cheap}LOCAL_MACRO_SYMBOL_{:04X}", first_local + index);
-                    synthesised(&name, &mut builder);
+                    synthesised(&name, token.kind(), &mut builder);
                 } else if token.kind() == kinds::CONTROL
                     && token.text().eq_ignore_ascii_case(".paramcount")
                 {
-                    synthesised(&args.len().to_string(), &mut builder);
+                    synthesised(&args.len().to_string(), kinds::NUMBER, &mut builder);
                 } else {
-                    builder.push(token.text(), Origin::Expanded { from, call_site });
+                    builder.token(&token, Origin::Expanded { from, call_site });
                 }
             }
         }

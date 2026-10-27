@@ -16,6 +16,7 @@ mod expander;
 mod functions;
 mod locate;
 mod macros;
+mod made;
 mod repeats;
 
 pub use expander::{ActiveLine, Expander, Host, IncludedFile, Limits};
