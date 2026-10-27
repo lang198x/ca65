@@ -98,6 +98,16 @@ const MEASURED: &[(&str, Want)] = &[
         ".define F(p, p) p\n.byte F(1,2)\n",
         Refused("two parameters"),
     ),
+    // A body being collected has its defines expanded, and a define made
+    // in it runs each time round.
+    (
+        ".repeat 2\n.define W 3\n.byte W\n.undef W\n.endrepeat\n",
+        Bytes(&[3, 3]),
+    ),
+    (
+        ".define V 1\n.repeat 2\n.byte V\n.endrepeat\n.undefine V\n",
+        Bytes(&[1, 1]),
+    ),
     (".undef Q\n", Refused("no define-style macro")),
     (
         ".macro m\n.endmacro\n.undef m\n",
@@ -151,6 +161,10 @@ fn measured_defines_that_ca65_refuses_for_the_parser() {
         ".define N 5\n.byte N .undef N\n",
         ".define N 5\nN = 3\n",
         ".define N 5\n.ifdef N\n.byte 1\n.endif\n",
+        // The name after `.undef` is expanded in a body being collected.
+        ".define V 1\n.repeat 1\n.undefine V\n.endrepeat\n",
+        ".define V 1\n.repeat 2\n.byte V\n.undef V\n.define V 2\n.endrepeat\n",
+        ".define V 1\n.macro m\n.undefine V\n.endmacro\nm\n",
         ".define m 1\n.macro m\n.endmacro\n",
         ".define N 1\n.delmac N\n",
         ".define F(p,q) p\n.byte F(2,3,4)\n",

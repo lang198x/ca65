@@ -5,8 +5,10 @@
 //! scanner, as each token is read, so a use is expanded wherever it is: in
 //! a line that runs, in a skipped branch, in a classic macro's body or a
 //! repeat's body as it is collected, and in a define's own body as it is
-//! defined. The one exception is the name just after `.define` or `.undef`,
-//! which would otherwise never be seen.
+//! defined. The one exception is the name just after `.define` or `.undef`
+//! on a line read to run or skip, which would otherwise never be seen. In a
+//! body being collected, ca65 expands that name too, so `.undef V` in a
+//! repeat's body reads `.undef 1` when `V` is 1, and is refused.
 //!
 //! A use takes exactly as many arguments as the define has parameters. Each
 //! runs to the next comma or the end of the line, unless it is in braces,
@@ -155,6 +157,7 @@ pub(super) fn expand(
     included_at: Option<Span>,
     limit: usize,
     strings: &Strings,
+    collecting: bool,
 ) -> Result<Option<Vec<Piece>>, Problem> {
     let tokens: Vec<SyntaxToken> = line
         .syntax()
@@ -188,7 +191,7 @@ pub(super) fn expand(
     let mut naming = false;
     while let Some(piece) = stream.next(naming)? {
         if !piece.is_blank() {
-            naming = piece.kind == kinds::CONTROL && names_a_define(&piece.text);
+            naming = !collecting && piece.kind == kinds::CONTROL && names_a_define(&piece.text);
         }
         out.push(piece);
     }
