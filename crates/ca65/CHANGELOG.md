@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.4...lang198x-ca65-v0.0.5) - 2026-10-27
+
+### Added
+
+- keep the bytes of a made string its text cannot hold
+- parse each expansion from the tokens it was made of
+
+### Fixed
+
+- join a mid-line .endrepeat's line to the next, as ca65 does
+
 ## [0.0.4](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.3...lang198x-ca65-v0.0.4) - 2026-10-27
 
 ### Added
