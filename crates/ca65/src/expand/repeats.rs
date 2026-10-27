@@ -17,7 +17,9 @@
 //! joins that line to the next line it reads, which is the first line of the
 //! next round, or after the last round the line after the `.endrepeat`.
 
-use lang198x_syntax::{ExpansionBuilder, Origin, Span, SyntaxElement, SyntaxToken, TextId};
+use lang198x_syntax::{Origin, Span, SyntaxElement, SyntaxToken, TextId};
+
+use super::made::Made;
 
 use super::macros::significant;
 use crate::ast::{Line, View};
@@ -68,13 +70,13 @@ impl Repeat {
     /// The text of the next time round, with its pieces' origins, or `None`
     /// once the body has run `count` times. A round ends with the tokens
     /// before a mid-line `.endrepeat`, which leave its last line unfinished.
-    pub(super) fn next_time(&mut self) -> Option<ExpansionBuilder> {
+    pub(super) fn next_time(&mut self) -> Option<Made> {
         if self.next >= self.count || (self.body.is_empty() && self.tail.is_empty()) {
             return None;
         }
         let round = self.next;
         self.next += 1;
-        let mut builder = ExpansionBuilder::new();
+        let mut builder = Made::new();
         for (line, text) in &self.body {
             for token in line
                 .syntax()
@@ -92,19 +94,20 @@ impl Repeat {
 
     /// Adds `token`, in `text`, to a round's text, with the counter replaced
     /// by the round's number.
-    fn push(&self, builder: &mut ExpansionBuilder, token: &SyntaxToken, text: TextId, round: u64) {
+    fn push(&self, builder: &mut Made, token: &SyntaxToken, text: TextId, round: u64) {
         let from = Span::new(text, token.text_range());
         let call_site = self.site;
         if token.kind() == kinds::IDENT && self.counter.as_deref() == Some(token.text()) {
             builder.push(
                 &round.to_string(),
+                kinds::NUMBER,
                 Origin::Synthesised {
                     inputs: from,
                     call_site,
                 },
             );
         } else {
-            builder.push(token.text(), Origin::Expanded { from, call_site });
+            builder.token(token, Origin::Expanded { from, call_site });
         }
     }
 }
