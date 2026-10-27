@@ -4,6 +4,7 @@ use asm198x_ir::{BinOp, DataRange, DiagSeverity, Expr as Ir, Operation};
 use lang198x_syntax::{Diagnostic, SyntaxToken};
 
 use super::expr::{self, invalid, unsupported};
+use super::settings::{CpuStack, setting};
 use super::{Known, Size, Value, instruction};
 use crate::Profile;
 use crate::ast::{Command, Expr, Statement, View};
@@ -41,6 +42,8 @@ pub struct Lowered {
     pub visibility: Option<Visibility>,
     /// The file whose bytes the line puts here, from `.incbin`.
     pub binary: Option<Binary>,
+    /// The change the line makes to ca65's stack of CPUs.
+    pub cpu: Option<CpuStack>,
 }
 
 /// The bytes of a file, put where the line is, from
@@ -184,6 +187,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
     let mut segment = None;
     let mut visibility = None;
     let mut binary = None;
+    let mut cpu = None;
     let mut defined = Vec::new();
     let op = if line.label_only() {
         None
@@ -238,7 +242,13 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
                                 binary = Some(included);
                                 None
                             }
-                            None => command_op(&command, line, known)?,
+                            None => match setting(&command, line, known)? {
+                                Some(change) => {
+                                    cpu = change;
+                                    None
+                                }
+                                None => command_op(&command, line, known)?,
+                            },
                         },
                     },
                 },
@@ -273,6 +283,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
         segment,
         visibility,
         binary,
+        cpu,
     })
 }
 
@@ -437,6 +448,9 @@ fn declared(
         ".exportzp" => (Visible::Export, true),
         ".global" => (Visible::Global, false),
         ".globalzp" => (Visible::Global, true),
+        ".condes" | ".constructor" | ".destructor" | ".interruptor" => {
+            return constructor(command, &word, known).map(|declared| Some((declared, Vec::new())));
+        }
         _ => return Ok(None),
     };
     let mut names = Vec::new();
@@ -484,6 +498,80 @@ fn declared(
         return Err(invalid(range, "expected a name"));
     }
     Ok(Some((Visibility { kind, names }, defined)))
+}
+
+/// `.condes name, type[, priority]`, or `.constructor`, `.destructor` or
+/// `.interruptor` with a name and priority: an export of the name, which
+/// ld65 puts in a table of its kind. The type is a number from 0 to 6 or
+/// one of the three keywords, and the priority, from 1 to 32, must be
+/// known now.
+fn constructor(command: &Command, word: &str, known: &dyn Known) -> Result<Visibility, Diagnostic> {
+    let range = command.syntax().text_range();
+    let values: Vec<Expr> = command.values().collect();
+    let (name, rest) = match values.split_first() {
+        Some((Expr::Name(name), rest)) if name.parts().count() == 1 && !name.is_global() => {
+            (name.text(), rest)
+        }
+        _ => return Err(invalid(range, "Expected an identifier")),
+    };
+    let known_now = |value: &Expr, what: &str| -> Result<i64, Diagnostic> {
+        let lowered = expr::expression(value, known)?;
+        expr::constant(&lowered, known).ok_or_else(|| {
+            invalid(
+                value.syntax().text_range(),
+                &format!("{what} must be known here"),
+            )
+        })
+    };
+    let priority = if word == ".condes" {
+        let Some((kind, rest)) = rest.split_first() else {
+            return Err(invalid(range, "`.condes` takes a name and a type"));
+        };
+        match kind {
+            Expr::Name(keyword)
+                if ["constructor", "destructor", "interruptor"]
+                    .iter()
+                    .any(|k| k.eq_ignore_ascii_case(&keyword.text())) => {}
+            Expr::Name(_) => {
+                return Err(invalid(
+                    kind.syntax().text_range(),
+                    "Expected CONSTRUCTOR, DESTRUCTOR or INTERRUPTOR",
+                ));
+            }
+            _ => {
+                if !(0..=6).contains(&known_now(kind, "the type")?) {
+                    return Err(invalid(
+                        kind.syntax().text_range(),
+                        "Numeric condes type is out of range",
+                    ));
+                }
+            }
+        }
+        rest
+    } else {
+        rest
+    };
+    match priority {
+        [] => {}
+        [priority] => {
+            if !(1..=32).contains(&known_now(priority, "the priority")?) {
+                return Err(invalid(
+                    priority.syntax().text_range(),
+                    "Given priority is out of range",
+                ));
+            }
+        }
+        _ => {
+            return Err(invalid(
+                range,
+                &format!("`{word}` takes a name, then a priority"),
+            ));
+        }
+    }
+    Ok(Visibility {
+        kind: Visible::Export,
+        names: vec![Declared { name, size: None }],
+    })
 }
 
 /// The change to the scopes a command makes, if it is `.scope`, `.proc`,
@@ -723,7 +811,7 @@ fn bytes(values: Vec<Expr>, line: &ActiveLine, known: &dyn Known) -> Result<Vec<
 
 /// What a string literal holds, without its quotes. A string a token
 /// function made may hold bytes its text cannot; the line keeps those.
-fn string(value: &Expr, line: &ActiveLine) -> Option<Vec<u8>> {
+pub(super) fn string(value: &Expr, line: &ActiveLine) -> Option<Vec<u8>> {
     let Expr::Literal(literal) = value else {
         return None;
     };
