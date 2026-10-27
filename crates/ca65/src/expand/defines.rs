@@ -16,7 +16,9 @@
 
 use std::collections::HashMap;
 
-use lang198x_syntax::{Origin, Span, SyntaxElement, SyntaxKind, SyntaxToken, TextId};
+use lang198x_syntax::{
+    DiagnosticKind, Origin, Span, SyntaxElement, SyntaxKind, SyntaxToken, TextId,
+};
 
 use crate::ast::{Command, Line, View};
 use crate::kinds;
@@ -28,11 +30,11 @@ pub(super) struct Piece {
     pub(super) kind: SyntaxKind,
     pub(super) origin: Origin,
     /// Where the piece's text lies, or what it was made from.
-    site: Span,
+    pub(super) site: Span,
 }
 
 impl Piece {
-    fn new(token: &SyntaxToken, origin: Origin, site: Span) -> Self {
+    pub(super) fn new(token: &SyntaxToken, origin: Origin, site: Span) -> Self {
         Self {
             text: token.text().to_owned(),
             kind: token.kind(),
@@ -41,12 +43,12 @@ impl Piece {
         }
     }
 
-    fn is_blank(&self) -> bool {
+    pub(super) fn is_blank(&self) -> bool {
         self.kind == SyntaxKind::WHITESPACE
     }
 
     /// Whether the piece ends an argument: the end of the line.
-    fn ends_line(&self) -> bool {
+    pub(super) fn ends_line(&self) -> bool {
         matches!(self.kind, SyntaxKind::NEWLINE | SyntaxKind::COMMENT)
     }
 }
@@ -106,10 +108,21 @@ impl Define {
     }
 }
 
-/// Why a line's defines could not be expanded.
+/// Why a line could not be expanded.
 pub(super) struct Problem {
     pub(super) site: Span,
     pub(super) message: String,
+    pub(super) kind: DiagnosticKind,
+}
+
+impl Problem {
+    pub(super) fn invalid(site: Span, message: String) -> Self {
+        Self {
+            site,
+            message,
+            kind: DiagnosticKind::Invalid,
+        }
+    }
 }
 
 /// The pieces of `line`, in `text`, with every use of a define in force
@@ -218,7 +231,7 @@ impl Stream<'_> {
     /// text is read next.
     fn call(&mut self, name: &Piece, define: &Define) -> Result<(), Problem> {
         let site = name.site;
-        let problem = |message: String| Problem { site, message };
+        let problem = |message: String| Problem::invalid(site, message);
         let mut args: Vec<Vec<Piece>> = Vec::new();
         for number in 1..=define.params.len() {
             let mut piece = self.next_solid()?;

@@ -42,7 +42,8 @@ use lang198x_syntax::{
 };
 
 use super::conditional::{Conditionals, Misfit};
-use super::defines::{self, Define};
+use super::defines::{self, Define, Piece, Problem};
+use super::functions;
 use super::macros::{self, Macro};
 use super::repeats::{self, Repeat};
 use crate::ast::{Command, Expr, Line, MacroCall, NameRef, SourceFile, Statement, View};
@@ -312,6 +313,10 @@ impl Expander {
                 self.skip(&line, problems, text, host);
                 continue;
             }
+            let Some((line, problems, text)) = self.run_functions(line, problems, text, host)
+            else {
+                continue;
+            };
             for problem in problems {
                 self.diagnostics.push((text, problem));
             }
@@ -611,7 +616,7 @@ impl Expander {
             Ok(None) => return Some((line, problems, text)),
             Ok(Some(pieces)) => pieces,
             Err(problem) => {
-                self.report(problem.site.text(), problem.site.range(), &problem.message);
+                self.report_kind(problem.kind, problem.site, &problem.message);
                 if problem.message.contains("too much text") {
                     self.ended = true;
                 }
@@ -634,6 +639,93 @@ impl Expander {
         let expanded = source.lines.into_iter().next()?;
         let problems = source.line_problems.into_iter().next().unwrap_or_default();
         Some((expanded, problems, id))
+    }
+
+    /// `line`, with its token functions run and the result parsed again, or
+    /// `None` if a call is broken, which is reported. A `.define`'s body is
+    /// kept as written, as ca65 reads it in raw mode.
+    fn run_functions(
+        &mut self,
+        line: Line,
+        problems: Vec<Diagnostic>,
+        text: TextId,
+        host: &mut dyn Host,
+    ) -> Option<(Line, Vec<Diagnostic>, TextId)> {
+        if macros::command_word(&line).as_deref() == Some(".define") {
+            return Some((line, problems, text));
+        }
+        let pieces: Vec<Piece> = line
+            .syntax()
+            .descendants()
+            .filter_map(SyntaxElement::into_token)
+            .map(|t| {
+                let from = Span::new(text, t.text_range());
+                Piece::new(&t, Origin::Source { from }, from)
+            })
+            .collect();
+        if !functions::any(&pieces) {
+            return Some((line, problems, text));
+        }
+        let mode = self.mode;
+        let result = functions::run(pieces, mode, &mut |pieces, site| {
+            self.constant(pieces, site, host)
+        });
+        let pieces = match result {
+            Ok(pieces) => pieces,
+            Err(problem) => {
+                self.report_kind(problem.kind, problem.site, &problem.message);
+                return None;
+            }
+        };
+        let mut builder = ExpansionBuilder::new();
+        for piece in &pieces {
+            builder.push(&piece.text, piece.origin);
+        }
+        let Some((id, source)) = self.add_text(builder, None) else {
+            self.report(
+                text,
+                line.syntax().text_range(),
+                "this line's token functions could not be run",
+            );
+            return None;
+        };
+        let line = source.lines.into_iter().next()?;
+        let problems = source.line_problems.into_iter().next().unwrap_or_default();
+        Some((line, problems, id))
+    }
+
+    /// The value of the constant expression made of `pieces`, for a token
+    /// function called at `site`, asked of the host.
+    fn constant(
+        &mut self,
+        pieces: &[Piece],
+        site: Span,
+        host: &mut dyn Host,
+    ) -> Result<i64, Problem> {
+        let made = Origin::Synthesised {
+            inputs: site,
+            call_site: site,
+        };
+        let mut builder = ExpansionBuilder::new();
+        builder.push(".byte ", made);
+        for piece in pieces {
+            builder.push(&piece.text, piece.origin);
+        }
+        builder.push("\n", made);
+        let expected = || Problem::invalid(site, "expected a constant value".to_owned());
+        let (_, source) = self.add_text(builder, None).ok_or_else(expected)?;
+        let line = source.lines.first().ok_or_else(expected)?;
+        let clean = source.line_problems.iter().all(Vec::is_empty);
+        let values: Vec<Expr> = match line.statement() {
+            Some(Statement::Command(command)) if clean => command.values().collect(),
+            _ => Vec::new(),
+        };
+        match values.as_slice() {
+            [value] => host
+                .evaluate(value)
+                .map_err(|message| Problem::invalid(site, message)),
+            _ => Err(expected()),
+        }
     }
 
     /// `.define name[(params)] body`.

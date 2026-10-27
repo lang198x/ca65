@@ -123,6 +123,21 @@ The token functions `.concat`, `.ident`, `.left`, `.mid`, `.right`,
 `.string` and `.sprintf`, each with `Synthesised` provenance naming every
 input.
 
+As built: functions run on each line that runs, after its defines, and not
+in skipped branches, bodies being collected or a `.define`'s body, which
+ca65 reads in raw mode. Each result is read again, so functions nest. A
+count is a constant expression the host evaluates. A token list runs to the
+first `)` unless it is in braces. Each result is `Synthesised` from the
+call.
+
+Where ca65 V2.19 is wrong against its manual, the manual wins. `.sprintf`'s
+format is "similar to the one of the C printf function", so C's results are
+given where ca65's own formatter differs: `%x` of a negative number, `%#x` of
+0, and the width of `%c` and `%s`. `.mid` takes its start as given, where
+ca65 treats a start above 100 as 0. A string holding a quote or a line
+break, and `.ident` of a name that reads as a register, cannot be written in
+this syntax and are reported as unsupported.
+
 ### 5g. Includes and packages
 
 `.include` and `.macpack`, opened when reached, through the loader, with
