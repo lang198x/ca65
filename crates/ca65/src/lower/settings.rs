@@ -90,6 +90,7 @@ pub(super) fn setting(
         ".listbytes" => int_arg(command, &values, known, 4, 255)?,
         ".pagelen" | ".pagelength" => int_arg(command, &values, known, 32, 127)?,
         ".fileopt" | ".fopt" => file_option(command, &values, line, known)?,
+        ".dbg" => debug(command)?,
         _ => return Ok(None),
     }
     Ok(Some(None))
@@ -135,6 +136,48 @@ fn int_arg(
         return Err(invalid(value.syntax().text_range(), "Range error"));
     }
     Ok(())
+}
+
+/// Checks `.dbg`, the debug information a compiler writes. The forms
+/// written by hand are lowered: `.dbg line`, which ends the last line
+/// given, and `.dbg file, "name", size, time`, with the numbers written
+/// out. Lines, functions and symbols with arguments need ca65's file table
+/// and type checker, and are not lowered yet.
+fn debug(command: &Command) -> Result<(), Diagnostic> {
+    let range = command.syntax().text_range();
+    let tokens: Vec<_> = command
+        .tokens()
+        .map(|list| list.tokens().collect())
+        .unwrap_or_default();
+    let Some((key, rest)) = tokens.split_first() else {
+        return Err(invalid(range, "Expected an identifier"));
+    };
+    if key.kind() != kinds::IDENT {
+        return Err(invalid(key.text_range(), "Expected an identifier"));
+    }
+    let key = key.text().to_ascii_lowercase();
+    let kinds: Vec<_> = rest.iter().map(|t| t.kind()).collect();
+    match key.as_str() {
+        "line" if rest.is_empty() => Ok(()),
+        "file"
+            if kinds
+                == [
+                    kinds::COMMA,
+                    kinds::STRING,
+                    kinds::COMMA,
+                    kinds::NUMBER,
+                    kinds::COMMA,
+                    kinds::NUMBER,
+                ] =>
+        {
+            Ok(())
+        }
+        "file" | "func" | "line" | "sym" => Err(unsupported(
+            range,
+            &format!("`.dbg {key}` with these arguments"),
+        )),
+        _ => Err(invalid(range, "Expected FILE, FUNC, LINE or SYM")),
+    }
 }
 
 /// Checks `.fileopt`: a keyword or a byte, then a string.

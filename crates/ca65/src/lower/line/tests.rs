@@ -290,6 +290,12 @@ const MEASURED: &[(&str, Option<&str>)] = &[
         ".word entry\nentry: .macro emit\nnop\n.endmacro\nemit\n",
         Some("0200ea"),
     ),
+    (
+        ".dbg line\n.dbg LINE\n.dbg file, \"t.s\", 10, 0\nnop\n",
+        Some("ea"),
+    ),
+    (".dbg bogus\n", None),
+    (".dbg\n", None),
     // Settings that make no bytes, checked as ca65 checks them, and the
     // constructor tables, which export their name.
     (".setcpu \"6502\"\nnop\n", Some("ea")),
@@ -798,6 +804,8 @@ fn settings_report_the_cpu_stack_and_constructors_export() {
         ".setcpu \"huc6280\"\n",
         ".pc02\n",
         ".p816\n",
+        ".dbg line, \"t.s\", 3\n",
+        ".dbg sym, \"x\"\n",
     ] {
         let problem = first(source).err().expect(source);
         assert_eq!(problem.kind(), DiagnosticKind::Unsupported, "{source}");
