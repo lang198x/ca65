@@ -551,10 +551,17 @@ fn command_op(
     };
     Ok(Some(match word.as_str() {
         ".byte" | ".byt" => sized(1, false, bytes(at_least_one(values())?, line, known)?),
+        // ca65 takes only strings here, and at least one.
         ".asciiz" => {
-            let mut values = bytes(values(), line, known)?;
-            values.push(Ir::Num(0));
-            sized(1, false, values)
+            let mut out = Vec::new();
+            for value in at_least_one(values())? {
+                let bytes = string(&value, line).ok_or_else(|| {
+                    invalid(value.syntax().text_range(), "`.asciiz` takes only strings")
+                })?;
+                out.extend(bytes.into_iter().map(|b| Ir::Num(i64::from(b))));
+            }
+            out.push(Ir::Num(0));
+            sized(1, false, out)
         }
         ".word" | ".addr" => sized(2, false, lowered(at_least_one(values())?)?),
         ".dbyt" => sized(2, true, lowered(at_least_one(values())?)?),
@@ -597,6 +604,9 @@ fn command_op(
                 .map_err(|_| invalid(range, "`.org` takes one value"))?;
             Operation::Org(expr::expression(&value, known)?)
         }
+        // `.reloc` ends what `.org` began: addresses count from the segment
+        // again, as the linker places it.
+        ".reloc" => Operation::PseudoPc(None),
         ".out" => {
             let [value] = <[Expr; 1]>::try_from(values())
                 .map_err(|_| invalid(range, "`.out` takes one string"))?;

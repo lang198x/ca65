@@ -18,11 +18,13 @@ const FILES: &[(&str, &str)] = &[
     ("openmac.inc", ".macro m\n.byte 4\n"),
     ("closemac.inc", ".endmacro\n"),
     ("end.inc", ".byte 5\n.end\n.byte 6\n"),
+    ("endbad.inc", ".byte 5\n.end\n.byte '\n"),
     ("def.inc", ".define D 7\n"),
     ("rep.inc", ".repeat 2\n"),
     ("callm.inc", "m\n"),
     ("defm.inc", ".macro m\n.byte 8\n.endmacro\n"),
     ("com.inc", ".byte 1 ; c"),
+    ("incé.inc", ".byte 1\n"),
     // ca65 reads a package as `name.mac` from its include path.
     ("pk.mac", ".macro m2\n.byte 4\n.endmacro\n"),
 ];
@@ -33,6 +35,8 @@ const MEASURED: &[(&str, Want)] = &[
     (".include \"com.inc\"\n.byte 9\n", Bytes(&[1, 9])),
     (".include \"b.inc\"\n", Bytes(&[3])),
     (".include \"end.inc\"\n.byte 9\n", Bytes(&[5])),
+    // Nothing after `.end` is read, in the file or the one that read it in.
+    (".include \"endbad.inc\"\n.byte '\n", Bytes(&[5])),
     (".include \"def.inc\"\n.byte D\n", Bytes(&[7])),
     (
         ".macro m\n.byte 8\n.endmacro\n.include \"callm.inc\"\n",
@@ -46,6 +50,8 @@ const MEASURED: &[(&str, Want)] = &[
     ),
     (".define F \"a.inc\"\n.include F\n", Bytes(&[1])),
     (".include .concat(\"a\", \".inc\")\n", Bytes(&[1])),
+    // A made name keeps its bytes, which spell `é` in UTF-8.
+    (".include .concat(\"inc\", \"é\", \".inc\")\n", Bytes(&[1])),
     // A skipped include is not opened.
     (
         ".if 0\n.include \"missing.inc\"\n.endif\n.byte 1\n",
