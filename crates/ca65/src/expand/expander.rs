@@ -206,6 +206,16 @@ struct Source {
     repeat: Option<Repeat>,
 }
 
+/// Whether `line` ends with a line break, rather than running on into
+/// the next.
+fn ends_line(line: &Line) -> bool {
+    line.syntax()
+        .descendants()
+        .filter_map(SyntaxElement::into_token)
+        .last()
+        .is_some_and(|t| t.kind() == SyntaxKind::NEWLINE)
+}
+
 /// The macros defined so far, for the parser's questions.
 struct Defined<'m>(&'m HashMap<String, Macro>);
 
@@ -270,6 +280,8 @@ pub struct Expander {
     ended: bool,
     finished: bool,
     diagnostics: Vec<(TextId, Diagnostic)>,
+    /// A repeat round's unfinished last line, joined to the next line read.
+    carry: Option<(Line, TextId)>,
 }
 
 /// The commands that open, turn or close a conditional.
@@ -339,6 +351,7 @@ impl Expander {
             ended: false,
             finished: false,
             diagnostics: Vec::new(),
+            carry: None,
         };
         let source = expander.load(TextId::File(FileId::new(0)), text, None, true)?;
         expander.sources.push(source);
@@ -456,13 +469,51 @@ impl Expander {
                     .cloned()
                     .unwrap_or_default();
                 source.next += 1;
-                return Some((line, problems, source.text));
+                let unfinished = source.repeat.is_some()
+                    && source.next == source.lines.len()
+                    && !ends_line(&line);
+                let mut read = (line, problems, source.text);
+                if let Some((carried, carried_text)) = self.carry.take() {
+                    read = self.join(&carried, carried_text, &read.0, read.2)?;
+                }
+                if unfinished {
+                    self.carry = Some((read.0, read.2));
+                    continue;
+                }
+                return Some(read);
             }
             if self.sources.len() == 1 {
-                return None;
+                let (line, text) = self.carry.take()?;
+                return Some((line, Vec::new(), text));
             }
             self.leave();
         }
+    }
+
+    /// A repeat round's unfinished last line joined to the next line read,
+    /// as ca65 reads tokens rather than lines, and parsed again.
+    fn join(
+        &mut self,
+        carried: &Line,
+        carried_text: TextId,
+        next: &Line,
+        next_text: TextId,
+    ) -> Option<(Line, Vec<Diagnostic>, TextId)> {
+        let mut builder = ExpansionBuilder::new();
+        for (line, text) in [(carried, carried_text), (next, next_text)] {
+            for token in line
+                .syntax()
+                .descendants()
+                .filter_map(SyntaxElement::into_token)
+            {
+                let from = Span::new(text, token.text_range());
+                builder.push(token.text(), self.copied(from));
+            }
+        }
+        let (id, source) = self.add_text(builder, None)?;
+        let line = source.lines.into_iter().next()?;
+        let problems = source.line_problems.into_iter().next().unwrap_or_default();
+        Some((line, problems, id))
     }
 
     /// Leaves the innermost source, which has run out. A repeat runs again;
@@ -1087,15 +1138,8 @@ impl Expander {
         };
         let (end, end_text) = end;
         self.refuse_rest(&end.rest, end_text);
-        if end.mid_line && count > 0 {
-            self.report_kind(
-                DiagnosticKind::Unsupported,
-                Span::new(end_text, end.token.text_range()),
-                "a `.endrepeat` after other tokens on its line is not supported",
-            );
-            return;
-        }
-        self.run_again(Repeat::new(body, counter, site, count));
+        let tail = end.before.into_iter().map(|t| (t, end_text)).collect();
+        self.run_again(Repeat::new(body, tail, counter, site, count));
     }
 
     /// Runs a repeat's body once more, if it has more times to run.

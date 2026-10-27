@@ -1,7 +1,5 @@
 //! Repeats, each case measured on ca65 V2.19 at `8d86ca7` like the others.
 
-use lang198x_syntax::DiagnosticKind;
-
 use super::{Bytes, Refused, Want, run};
 use crate::Profile;
 use crate::expand::Expander;
@@ -160,25 +158,43 @@ fn measured_programs_that_ca65_refuses_for_the_parser() {
     }
 }
 
+/// A `.endrepeat` after other tokens on its line, measured on ca65 V2.19:
+/// each round's unfinished last line runs on into the next line read, and
+/// after the last round into the line after the `.endrepeat`.
+const JOINED: &[(&str, Option<&[u8]>)] = &[
+    (
+        ".repeat 1\n.byte 7\ntail:.endrepeat\n.word tail\n",
+        Some(&[7, 1, 0]),
+    ),
+    (".repeat 2\n.byte 7\ntail:.endrepeat\n.word tail\n", None),
+    (".repeat 1\n.byte 1 .endrepeat\n", Some(&[1])),
+    (".repeat 1\n.byte 1 .endrepeat\n.byte 2\n", None),
+    (".repeat 1\n.byte 1, .endrepeat\n2\n", Some(&[1, 2])),
+    (".repeat 1\n.byte 1 .endrepeat\n\n.byte 2\n", Some(&[1, 2])),
+    (
+        ".repeat 1\n.byte 7\ntail:.endrepeat\n.byte 2\n.word tail\n",
+        Some(&[7, 2, 1, 0]),
+    ),
+    (".repeat 2\nnop\n.byte 1 .endrepeat\n", None),
+    (".repeat 2\nnop\n: .endrepeat\n", Some(&[0xEA, 0xEA])),
+    (".repeat 2\n: .endrepeat\nnop\n", None),
+    (".repeat 2, i\nl:\n.byte i\n@c:.endrepeat\n", None),
+    (
+        ".repeat 2, i\n.byte i\nl .set i .endrepeat\n.byte l\n",
+        None,
+    ),
+    (".repeat 0\n.byte 1 .endrepeat\n.byte 2\n", Some(&[2])),
+];
+
 #[test]
-fn an_endrepeat_partway_through_a_line_is_unsupported() {
-    // ca65 runs the body's tokens on into the next time round, and the
-    // line after the `.endrepeat` on into the last, which is refused in
-    // every program measured; that is not modelled.
-    let source = ".repeat 2\n.byte 1 .endrepeat\n.byte 2\n";
-    let mut expander = Expander::new(source, Profile::CA65_2_19_6502).unwrap();
-    let mut host = super::host::TestHost::default();
-    while let Some(line) = expander.next_line(&mut host) {
-        drop(line);
+fn an_endrepeat_partway_through_a_line_joins_the_next_line() {
+    for (source, want) in JOINED {
+        let got = run(source);
+        match want {
+            Some(bytes) => assert_eq!(got.as_deref(), Ok(*bytes), "{source:?}"),
+            None => assert!(got.is_err(), "{source:?}: {got:?}"),
+        }
     }
-    assert!(
-        expander
-            .diagnostics()
-            .iter()
-            .any(|(_, d)| d.kind() == DiagnosticKind::Unsupported),
-        "{:?}",
-        expander.diagnostics()
-    );
 }
 
 #[test]
