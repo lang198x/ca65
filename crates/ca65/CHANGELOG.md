@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.2...lang198x-ca65-v0.0.3) - 2026-10-27
+
+### Added
+
+- locate a ca65 line in the files a person wrote
+- lower whole ca65 lines to asm198x-ir
+- lower ca65 expressions and instructions to asm198x-ir
+
+### Fixed
+
+- give ca65 lines the meaning Asm198x's verdicts recorded
+
 ## [0.0.2](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.1...lang198x-ca65-v0.0.2) - 2026-10-27
 
 ### Added
