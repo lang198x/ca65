@@ -20,9 +20,12 @@
 //! assert!(lexed.diagnostics().is_empty());
 //! ```
 
+pub mod ast;
 mod keywords;
 pub mod kinds;
 mod lexer;
+#[cfg(test)]
+mod measured;
 mod parser;
 mod profile;
 
