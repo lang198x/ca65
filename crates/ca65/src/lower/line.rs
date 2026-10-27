@@ -1,6 +1,6 @@
 //! One line, as the expander hands it over, lowered to IR statements.
 
-use asm198x_ir::{BinOp, DataRange, Expr as Ir, Operation};
+use asm198x_ir::{BinOp, DataRange, DiagSeverity, Expr as Ir, Operation};
 use lang198x_syntax::{Diagnostic, SyntaxToken};
 
 use super::expr::{self, invalid, unsupported};
@@ -529,8 +529,88 @@ fn command_op(
                 .map_err(|_| invalid(range, "`.org` takes one value"))?;
             Operation::Org(expr::expression(&value, known)?)
         }
+        ".out" => {
+            let [value] = <[Expr; 1]>::try_from(values())
+                .map_err(|_| invalid(range, "`.out` takes one string"))?;
+            say(DiagSeverity::Note, &value, line)?
+        }
+        // These read their string and ignore what follows it, as ca65 does.
+        ".warning" | ".error" | ".fatal" => {
+            let value = values()
+                .into_iter()
+                .next()
+                .ok_or_else(|| invalid(range, &format!("`{word}` takes a string")))?;
+            let severity = if word == ".warning" {
+                DiagSeverity::Warning
+            } else {
+                DiagSeverity::Error
+            };
+            say(severity, &value, line)?
+        }
+        ".assert" => assertion(command, line, known)?,
         other => return Err(unsupported(range, &format!("`{other}`"))),
     }))
+}
+
+/// A message to say, from the string `value`.
+fn say(severity: DiagSeverity, value: &Expr, line: &ActiveLine) -> Result<Operation, Diagnostic> {
+    let bytes = string(value, line)
+        .ok_or_else(|| invalid(value.syntax().text_range(), "expected a string"))?;
+    Ok(Operation::Diagnose {
+        severity,
+        message: String::from_utf8_lossy(&bytes).into_owned(),
+    })
+}
+
+/// `.assert condition, action[, "message"]`. The condition is checked once
+/// the program is linked, so it may name a label further on. The actions
+/// `error` and `lderror` refuse the program if it is 0; `warning` and
+/// `ldwarning` only warn. Assembly and linking are one here, so the `ld`
+/// forms are the same as the others.
+fn assertion(
+    command: &Command,
+    line: &ActiveLine,
+    known: &dyn Known,
+) -> Result<Operation, Diagnostic> {
+    let range = command.syntax().text_range();
+    let values: Vec<Expr> = command.values().collect();
+    let (condition, action, message) = match values.as_slice() {
+        [condition, action] => (condition, action, None),
+        [condition, action, message] => (condition, action, Some(message)),
+        _ => {
+            return Err(invalid(
+                range,
+                "`.assert` takes a condition, an action and perhaps a message",
+            ));
+        }
+    };
+    let action = match action {
+        Expr::Name(name) => name.text().to_ascii_lowercase(),
+        _ => String::new(),
+    };
+    let fatal = match action.as_str() {
+        "error" | "lderror" => true,
+        "warning" | "ldwarning" => false,
+        _ => {
+            return Err(invalid(
+                range,
+                "the action of `.assert` is `error`, `warning`, `lderror` or `ldwarning`",
+            ));
+        }
+    };
+    let message = match message {
+        Some(message) => {
+            let bytes = string(message, line)
+                .ok_or_else(|| invalid(message.syntax().text_range(), "expected a string"))?;
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+        None => "Assertion failed".to_owned(),
+    };
+    Ok(Operation::Assert {
+        cond: expr::expression(condition, known)?,
+        fatal,
+        message,
+    })
 }
 
 /// `value` with each `*` moved on by `offset` bytes.
