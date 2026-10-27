@@ -120,8 +120,8 @@ impl TestHost {
                     other => return self.problems.push(format!("no command {other:?} here")),
                 };
                 command.values().try_for_each(|value| {
-                    if let Some(text) = string(&value).filter(|_| width == 1) {
-                        for byte in text.bytes() {
+                    if let Some(bytes) = string(&value, active).filter(|_| width == 1) {
+                        for byte in bytes {
                             self.emit(i64::from(byte), 1);
                         }
                         return Ok(());
@@ -231,12 +231,10 @@ pub(super) fn run_with(source: &str, files: &[(&str, &str)]) -> Result<Vec<u8>, 
     }
 }
 
-/// What a string literal holds, without its quotes.
-fn string(expr: &Expr) -> Option<String> {
+/// What a string literal holds, without its quotes, as the line gives it.
+fn string(expr: &Expr, line: &ActiveLine) -> Option<Vec<u8>> {
     let Expr::Literal(literal) = expr else {
         return None;
     };
-    let token = literal.token()?;
-    let text = token.text().strip_prefix('"')?;
-    Some(text.strip_suffix('"').unwrap_or(text).to_owned())
+    line.string(&literal.token()?)
 }

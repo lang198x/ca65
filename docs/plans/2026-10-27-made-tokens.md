@@ -1,6 +1,7 @@
 # Plan: expansions keep their tokens
 
-**Status:** Agreed 2026-10-27, as option 1 of three put to the project owner.
+**Status:** Done 2026-10-27. Agreed as option 1 of three put to the project
+owner.
 It follows step 5, [preprocessing](2026-10-27-preprocessing.md).
 **Binding records:** Lang198x's
 [shared syntax layer decision](https://github.com/lang198x/lang198x/blob/main/decisions/shared-syntax-layer.md)
@@ -41,6 +42,11 @@ The fix is to hand on tokens, as ca65 does, and not to lex made text again.
   is kept, never in the tree. Copying a token into another expansion copies
   its entry. `ActiveLine` gives the bytes of any string token on the line,
   and lowering reads `.byte` and `.asciiz` strings through it.
+
+  As built: since expansions are not lexed again, a quote or a line break
+  sits in a made string's text as it is. Only a string with a byte above
+  127 has an entry in the table, and its text shows each such byte as
+  `\xNN`, with a backslash doubled.
 - **One way to copy a token.** Every expansion is built through one helper
   that pushes a token's text, origin, kind and bytes together. Macros,
   repeats, defines, functions and joined lines all use it, so no path can

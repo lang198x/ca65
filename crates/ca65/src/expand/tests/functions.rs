@@ -1,10 +1,6 @@
 //! Token functions, each case measured on ca65 V2.19 at `8d86ca7`.
 
-use lang198x_syntax::DiagnosticKind;
-
 use super::{Bytes, Refused, Want, run};
-use crate::Profile;
-use crate::expand::Expander;
 
 const MEASURED: &[(&str, Want)] = &[
     (".byte .concat(\"ab\",\"c\")\n", Bytes(b"abc")),
@@ -154,27 +150,71 @@ fn mid_takes_its_start_as_given() {
     assert_eq!(run(".byte .mid(200, 1, {7}) 5\n").as_deref(), Ok(&[5][..]));
 }
 
-/// The kinds of problem `source` gives.
-fn kinds(source: &str) -> Vec<DiagnosticKind> {
-    let mut expander = Expander::new(source, Profile::CA65_2_19_6502).expect("parses");
-    let mut host = super::host::TestHost::default();
-    while expander.next_line(&mut host).is_some() {}
-    expander
-        .diagnostics()
-        .iter()
-        .map(|(_, d)| d.kind())
-        .collect()
+/// Strings a token function makes that ca65's syntax cannot write: a
+/// quote, a line break, or a byte above 127. Each is measured on ca65 V2.19.
+const UNWRITABLE: &[(&str, &[u8])] = &[
+    (".byte .sprintf(\"%c\",255)\n", &[0xFF]),
+    (".byte .sprintf(\"%c\",34)\n", &[0x22]),
+    (".byte .sprintf(\"%c%c\",34,34)\n", &[0x22, 0x22]),
+    (".byte .concat(.sprintf(\"%c\",34),\"a\")\n", &[0x22, 0x61]),
+    (".byte .sprintf(\"%c\",10)\n", &[0x0A]),
+    (".byte .sprintf(\"%c\",13)\n", &[0x0D]),
+    (".byte .sprintf(\"%s\",.sprintf(\"%c\",255))\n", &[0xFF]),
+    (
+        ".byte .string(5), .concat(\"a\",.sprintf(\"%c\",128))\n",
+        &[0x35, 0x61, 0x80],
+    ),
+    (".byte .left(1,{.sprintf(\"%c\",255)})\n", &[0xFF]),
+    (
+        ".repeat 2,i\n.byte .sprintf(\"%c\",200+i)\n.endrepeat\n",
+        &[0xC8, 0xC9],
+    ),
+    (".define D .sprintf(\"%c\",255)\n.byte D\n", &[0xFF]),
+    (
+        ".macro emit value\n.byte value\n.endmacro\nemit .sprintf(\"%c\",255)\n",
+        &[0xFF],
+    ),
+    (
+        ".macro emit value\n.byte value,2\n.endmacro\nemit {.sprintf(\"%c\",255)}\n",
+        &[0xFF, 2],
+    ),
+    // ca65 V2.19 pads `%c` on the right, against C; C's result is given.
+    (".byte .sprintf(\"%3c\",255)\n", &[0x20, 0x20, 0xFF]),
+];
+
+#[test]
+fn strings_this_syntax_cannot_write_keep_their_bytes() {
+    for (source, bytes) in UNWRITABLE {
+        assert_eq!(run(source).as_deref(), Ok(*bytes), "{source:?}");
+    }
+    // ca65 refuses a name made of a byte above 127.
+    let problems = run(".ident(.sprintf(\"%c\",255)):\n").expect_err("refused");
+    assert!(
+        problems.iter().any(|p| p.contains("not a valid name")),
+        "{problems:?}"
+    );
 }
 
 #[test]
-fn results_this_syntax_cannot_write_are_unsupported() {
-    // ca65 makes a string holding a quote, or the byte $FF.
-    for source in [
-        ".byte .sprintf(\"%c\", 34)\n",
-        ".byte .sprintf(\"%c\", 255)\n",
-    ] {
-        assert_eq!(kinds(source), [DiagnosticKind::Unsupported], "{source:?}");
-    }
+fn a_made_string_shows_its_bytes() {
+    use crate::ast::View;
+    // A backslash is an ordinary character in ca65's strings, so the
+    // format makes $FF, a backslash and a quote.
+    let (_, lines) = super::active_lines(".byte .sprintf(\"%c\\%c\", 255, 34)\n");
+    let line = &lines[0];
+    let made = line
+        .line()
+        .syntax()
+        .descendants()
+        .filter_map(lang198x_syntax::SyntaxElement::into_token)
+        .find(|t| t.kind() == crate::kinds::STRING)
+        .expect("a string");
+    assert_eq!(made.text(), "\"\\xFF\\\\\"\"");
+    assert_eq!(line.string(&made), Some(vec![0xFF, b'\\', b'"']));
+    // A string of plain bytes is shown as it is, with nothing kept beside.
+    let (_, lines) = super::active_lines(".byte .concat(\"a\\\", \"b\")\n");
+    let plain = super::token(&lines[0], "\"a\\b\"");
+    assert_eq!(lines[0].string(&plain), Some(b"a\\b".to_vec()));
 }
 
 #[test]

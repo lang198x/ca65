@@ -8,7 +8,6 @@ use super::{Known, instruction};
 use crate::Profile;
 use crate::ast::{Command, Expr, Statement, View};
 use crate::expand::ActiveLine;
-use crate::kinds;
 
 /// A statement a line lowers to: a label, an operation, or both.
 ///
@@ -124,7 +123,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
                     scope = Some(change);
                     None
                 }
-                None => command_op(&command, known)?,
+                None => command_op(&command, line, known)?,
             },
             Some(_) => {
                 return Err(unsupported(
@@ -179,7 +178,11 @@ fn scope_change(command: &Command) -> Result<Option<Scope>, Diagnostic> {
 }
 
 /// The operation a control command lowers to.
-fn command_op(command: &Command, known: &dyn Known) -> Result<Option<Operation>, Diagnostic> {
+fn command_op(
+    command: &Command,
+    line: &ActiveLine,
+    known: &dyn Known,
+) -> Result<Option<Operation>, Diagnostic> {
     let range = command.syntax().text_range();
     let word = command
         .word()
@@ -212,9 +215,9 @@ fn command_op(command: &Command, known: &dyn Known) -> Result<Option<Operation>,
         }
     };
     Ok(Some(match word.as_str() {
-        ".byte" | ".byt" => sized(1, false, bytes(at_least_one(values())?, known)?),
+        ".byte" | ".byt" => sized(1, false, bytes(at_least_one(values())?, line, known)?),
         ".asciiz" => {
-            let mut values = bytes(values(), known)?;
+            let mut values = bytes(values(), line, known)?;
             values.push(Ir::Num(0));
             sized(1, false, values)
         }
@@ -282,25 +285,25 @@ fn at_offset(value: Ir, offset: i64) -> Ir {
 }
 
 /// The values of `.byte` and its kin: a string gives each of its bytes.
-fn bytes(values: Vec<Expr>, known: &dyn Known) -> Result<Vec<Ir>, Diagnostic> {
+fn bytes(values: Vec<Expr>, line: &ActiveLine, known: &dyn Known) -> Result<Vec<Ir>, Diagnostic> {
     let mut out = Vec::new();
     for value in values {
-        match string(&value) {
-            Some(text) => out.extend(text.bytes().map(|b| Ir::Num(i64::from(b)))),
+        match string(&value, line) {
+            Some(bytes) => out.extend(bytes.into_iter().map(|b| Ir::Num(i64::from(b)))),
             None => out.push(expr::expression(&value, known)?),
         }
     }
     Ok(out)
 }
 
-/// What a string literal holds, without its quotes.
-fn string(value: &Expr) -> Option<String> {
+/// What a string literal holds, without its quotes. A string a token
+/// function made may hold bytes its text cannot; the line keeps those.
+fn string(value: &Expr, line: &ActiveLine) -> Option<Vec<u8>> {
     let Expr::Literal(literal) = value else {
         return None;
     };
-    let token: SyntaxToken = literal.token().filter(|t| t.kind() == kinds::STRING)?;
-    let text = token.text().strip_prefix('"').unwrap_or(token.text());
-    Some(text.strip_suffix('"').unwrap_or(text).to_owned())
+    let token: SyntaxToken = literal.token()?;
+    line.string(&token)
 }
 
 /// The count of `.res` or `.align`, which ca65 needs now, and the fill byte
