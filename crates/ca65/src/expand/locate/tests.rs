@@ -52,3 +52,32 @@ fn a_span_from_elsewhere_is_nowhere() {
     );
     assert_eq!(expander.locate(elsewhere), None);
 }
+
+/// The line of the outermost macro call that made each line `source` hands
+/// over, or `None` for one no call made.
+fn calls(source: &str) -> Vec<Option<u32>> {
+    let mut expander = Expander::new(source, Profile::CA65_2_19_6502).expect("parses");
+    let mut host = TestHost::with_files(&[]);
+    let mut calls = Vec::new();
+    while let Some(line) = expander.next_line(&mut host) {
+        let call = expander.macro_call(line.span());
+        calls.push(call.and_then(|call| expander.locate(call)).map(|at| at.line));
+    }
+    calls
+}
+
+#[test]
+fn a_macros_lines_belong_to_its_outermost_call() {
+    // A macro inside a repeat: each time round, the call's own line.
+    let source = ".macro m\n nop\n.endmacro\n.repeat 2\n m\n.endrepeat\n";
+    assert_eq!(calls(source), [Some(5), Some(5)]);
+    // A repeat inside a macro: the macro's call.
+    let source = ".macro m\n.repeat 2\n nop\n.endrepeat\n.endmacro\nm\n";
+    assert_eq!(calls(source), [Some(6), Some(6)]);
+    // A macro inside a macro: the outer call.
+    let source = ".macro i\n nop\n.endmacro\n.macro o\n i\n.endmacro\n o\n";
+    assert_eq!(calls(source), [Some(7)]);
+    // No call: a plain line, a repeat's, and a define's.
+    let source = " nop\n.repeat 1\n nop\n.endrepeat\n.define D nop\n D\n";
+    assert_eq!(calls(source), [None, None, None]);
+}

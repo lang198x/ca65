@@ -34,11 +34,11 @@
 //! V2.19 instead finishes the repeat first, which its manual's "abort a macro
 //! expansion immediately" does not allow; that is a bug not copied here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use lang198x_syntax::{
-    Diagnostic, DiagnosticKind, FileId, Origin, Provenance, Span, SyntaxElement, SyntaxKind,
-    SyntaxToken, TextId, TextRange, TextSize,
+    Diagnostic, DiagnosticKind, ExpansionId, FileId, Origin, Provenance, Span, SyntaxElement,
+    SyntaxKind, SyntaxToken, TextId, TextRange, TextSize,
 };
 
 use super::conditional::{Conditionals, Misfit};
@@ -309,6 +309,9 @@ pub struct Expander {
     /// Where each line starts in each file, by file number, for
     /// [`locate`](Expander::locate).
     pub(super) line_starts: Vec<Vec<TextSize>>,
+    /// The texts macro calls made, for
+    /// [`macro_call`](Expander::macro_call).
+    pub(super) macro_texts: HashSet<ExpansionId>,
     ended: bool,
     finished: bool,
     diagnostics: Vec<(TextId, Diagnostic)>,
@@ -382,6 +385,7 @@ impl Expander {
             conditionals: Conditionals::default(),
             files: Vec::new(),
             line_starts: vec![super::locate::line_starts(text)],
+            macro_texts: HashSet::new(),
             ended: false,
             finished: false,
             diagnostics: Vec::new(),
@@ -891,7 +895,12 @@ impl Expander {
         let (builder, tokens, strings) = made.finish();
         let expansion = builder.finish().ok()?;
         let text = expansion.text().to_owned();
-        let id = TextId::Expansion(self.provenance.add(expansion).ok()?);
+        let expansion = self.provenance.add(expansion).ok()?;
+        // Only a macro call's text has a call depth.
+        if call_depth.is_some() {
+            self.macro_texts.insert(expansion);
+        }
+        let id = TextId::Expansion(expansion);
         self.strings.add(id, strings);
         let source = self.load(id, &text, Some(tokens), call_depth, false).ok()?;
         Some((id, source))
