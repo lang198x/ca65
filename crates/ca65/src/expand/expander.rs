@@ -227,6 +227,17 @@ struct Source {
     repeat: Option<Repeat>,
 }
 
+/// `line` for the host if it has a label, which is all of it the host
+/// gets: the expander has run the rest.
+fn labelled(line: Line, text: TextId) -> Option<ActiveLine> {
+    (line.label().is_some() || line.unnamed_label().is_some()).then_some(ActiveLine {
+        line,
+        text,
+        label_only: true,
+        strings: Vec::new(),
+    })
+}
+
 /// Whether `line` ends with a line break, rather than running on into
 /// the next.
 fn ends_line(line: &Line) -> bool {
@@ -389,7 +400,8 @@ impl Expander {
             let Some((line, problems, text)) = self.read() else {
                 break;
             };
-            let Some((line, problems, text)) = self.expand_defines(line, problems, text) else {
+            let Some((line, problems, text)) = self.expand_defines(line, problems, text, false)
+            else {
                 continue;
             };
             if self.lines_read >= self.limits.lines {
@@ -631,13 +643,19 @@ impl Expander {
             return;
         }
         let name = match (&value, word) {
+            // A made string's bytes are the name, as ca65 reads them.
             (Some(Expr::Literal(literal)), ".include") => literal
                 .token()
                 .filter(|t| t.kind() == kinds::STRING)
-                .map(|t| {
-                    let text = t.text().strip_prefix('"').unwrap_or(t.text());
-                    text.strip_suffix('"').unwrap_or(text).to_owned()
-                }),
+                .map(
+                    |t| match self.strings.get(Span::new(text, t.text_range())) {
+                        Some(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+                        None => {
+                            let text = t.text().strip_prefix('"').unwrap_or(t.text());
+                            text.strip_suffix('"').unwrap_or(text).to_owned()
+                        }
+                    },
+                ),
             (Some(Expr::Name(name)), ".macpack")
                 if !name.is_global() && name.parts().count() == 1 =>
             {
@@ -693,6 +711,29 @@ impl Expander {
         }
     }
 
+    /// `.end`: ca65 reads nothing more, so a problem the lexer found further
+    /// on, in this text or any text under it, is not one.
+    fn end(&mut self, command: &Command, text: TextId) {
+        self.ended = true;
+        let at = command.word().map_or_else(
+            || command.syntax().text_range().end(),
+            |w| w.text_range().end(),
+        );
+        let mut cuts: Vec<(TextId, TextSize)> = vec![(text, at)];
+        for source in &self.sources {
+            if let Some(line) = source.lines.get(source.next)
+                && source.text != text
+            {
+                cuts.push((source.text, line.syntax().text_range().start()));
+            }
+        }
+        self.diagnostics.retain(|(text, problem)| {
+            !cuts
+                .iter()
+                .any(|(cut, at)| cut == text && problem.range().start() >= *at)
+        });
+    }
+
     /// Reports any conditional left open, once, when the program is done.
     fn finish(&mut self) {
         if self.finished {
@@ -719,36 +760,25 @@ impl Expander {
                         // ca65 defines a label on a conditional's line when
                         // the line is read while lines run, before the
                         // conditional acts.
-                        let labelled = line.label().is_some() || line.unnamed_label().is_some();
                         self.conditional(&command, word, text, host);
-                        return labelled.then_some(ActiveLine {
-                            line,
-                            text,
-                            label_only: true,
-                            strings: Vec::new(),
-                        });
+                        return labelled(line, text);
                     }
+                    // ca65 defines a label on these lines too.
                     Some(".end") => {
-                        self.ended = true;
-                        return None;
+                        self.end(&command, text);
+                        return labelled(line, text);
                     }
                     Some(".macro" | ".mac") => {
                         self.define(&command, text);
-                        return None;
+                        return labelled(line, text);
                     }
                     Some(".define") => {
                         self.define_style(&command, text);
                         return None;
                     }
                     Some(word @ (".include" | ".macpack")) => {
-                        let labelled = line.label().is_some() || line.unnamed_label().is_some();
                         self.include(&command, word, text, host);
-                        return labelled.then_some(ActiveLine {
-                            line,
-                            text,
-                            label_only: true,
-                            strings: Vec::new(),
-                        });
+                        return labelled(line, text);
                     }
                     Some(".undef" | ".undefine") => {
                         if let Some(name) = command.name()
@@ -928,7 +958,7 @@ impl Expander {
             };
             source.next += 1;
             let text = source.text;
-            if let Some((line, _, text)) = self.expand_defines(line, Vec::new(), text) {
+            if let Some((line, _, text)) = self.expand_defines(line, Vec::new(), text, true) {
                 return Some((line, text));
             }
         }
@@ -936,18 +966,30 @@ impl Expander {
 
     /// `line`, with every use of a define in force expanded and the result
     /// parsed again, or `None` if a use is broken, which is reported.
+    /// `collecting` says the line goes into a body being collected, where a
+    /// define's own name is expanded too.
     fn expand_defines(
         &mut self,
         line: Line,
         problems: Vec<Diagnostic>,
         text: TextId,
+        collecting: bool,
     ) -> Option<(Line, Vec<Diagnostic>, TextId)> {
         let room = self
             .limits
             .expanded_bytes
             .saturating_sub(self.expanded_bytes);
         let site = self.include_site(text);
-        let pieces = match defines::expand(&self.defines, &line, text, site, room, &self.strings) {
+        let expanded = defines::expand(
+            &self.defines,
+            &line,
+            text,
+            site,
+            room,
+            &self.strings,
+            collecting,
+        );
+        let pieces = match expanded {
             Ok(None) => return Some((line, problems, text)),
             Ok(Some(pieces)) => pieces,
             Err(problem) => {

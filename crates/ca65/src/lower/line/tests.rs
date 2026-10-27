@@ -166,6 +166,12 @@ fn emit(op: &Operation, mini: &mut Mini, bytes: &mut Vec<u8>) -> Result<(), Stri
                 bytes.extend(le);
             }
         }
+        Operation::PseudoPc(None) => {
+            // Flat at 0, the segment's address is where its bytes are.
+            mini.pc = i64::try_from(bytes.len()).map_err(|_| out_of_range())?;
+            mini.org = false;
+            return Ok(());
+        }
         Operation::Reserve(n) => bytes.extend(std::iter::repeat_n(0, *n)),
         Operation::Fill { count, value } => {
             let n = usize::try_from(mini.value(count).unwrap_or(0)).map_err(|_| out_of_range())?;
@@ -249,6 +255,10 @@ const MEASURED: &[(&str, Option<&str>)] = &[
         Some("34781212"),
     ),
     (".asciiz \"ab\"\n", Some("616200")),
+    (".asciiz \"a\", \"b\"\n", Some("616200")),
+    (".asciiz \"a\",1\n", None),
+    (".asciiz 'a'\n", None),
+    (".asciiz\n", None),
     (".res 3\n.res 2, $ea\n.byte 1\n", Some("000000eaea01")),
     (".res 0\n", Some("")),
     (".res -1\n", None),
@@ -269,6 +279,25 @@ const MEASURED: &[(&str, Option<&str>)] = &[
     (".word *, *+2, *\n", Some("000004000400")),
     (".dbyt *, *\n", Some("00000002")),
     (".org $1000\n.word *,*+2\n", Some("00100410")),
+    // A label on `.end`'s line or `.macro`'s is defined, and nothing after
+    // `.end` is read, not even on its own line.
+    ("nop\nfinish: .end\n", Some("ea")),
+    (".word finish\nfinish: .end\n", Some("0200")),
+    ("nop\n.end $100000000\n", Some("ea")),
+    ("nop\n.end\n.byte '\n", Some("ea")),
+    ("nop\n.end\nfoo bar\n", Some("ea")),
+    (
+        ".word entry\nentry: .macro emit\nnop\n.endmacro\nemit\n",
+        Some("0200ea"),
+    ),
+    // `.reloc` ends `.org`: addresses count from the segment again.
+    ("nop\n.reloc\nnop\n", Some("eaea")),
+    (
+        ".org $10\nl: nop\n.reloc\nm: .word l, m\n",
+        Some("ea10000100"),
+    ),
+    (".org $10\n.reloc\n.org $20\nl: .word l\n", Some("2000")),
+    (".reloc 1\n", None),
     ("lda fwd\nfwd = $12\n", Some("ad1200")),
     ("fwd = $12\nlda fwd\n", Some("a512")),
     ("lab: nop\nlda lab\n", Some("eaad0000")),
