@@ -18,6 +18,9 @@ pub(super) enum Shape {
     Bare,
     /// Values separated by commas: `.byte 1, "a"`, `.res 4`, `.if x > 1`.
     Values,
+    /// One value, then whatever is left of the line, as tokens, which ca65
+    /// reads past: `.warning "careful" anything`.
+    Message,
     /// Values, after which a macro defined elsewhere may be known:
     /// `.include "x.inc"`, `.macpack longbranch`.
     Include,
@@ -117,13 +120,13 @@ const SHAPES: &[(&str, Shape)] = &[
     (".ENDSTRUCT", Shape::EndBlock),
     (".ENDUNION", Shape::EndBlock),
     (".ENUM", Shape::Block(Block::Enum)),
-    (".ERROR", Shape::Values),
+    (".ERROR", Shape::Message),
     (".EXITMAC", Shape::Bare),
     (".EXITMACRO", Shape::Bare),
     (".EXPORT", Shape::Names),
     (".EXPORTZP", Shape::Names),
     (".FARADDR", Shape::Values),
-    (".FATAL", Shape::Values),
+    (".FATAL", Shape::Message),
     (".FEATURE", Shape::Unsupported),
     (".FILEOPT", Shape::Values),
     (".FOPT", Shape::Values),
@@ -242,7 +245,7 @@ const SHAPES: &[(&str, Shape)] = &[
     (".UNDEFINE", Shape::Undefine),
     (".UNION", Shape::Block(Block::Struct)),
     (".VERSION", Shape::Unexpected),
-    (".WARNING", Shape::Values),
+    (".WARNING", Shape::Message),
     (".WORD", Shape::Values),
     (".XMATCH", Shape::Unexpected),
     (".XOR", Shape::Unexpected),
@@ -325,6 +328,10 @@ impl Parser<'_, '_> {
         match shape {
             Shape::Bare | Shape::Unexpected | Shape::Synthesised => {}
             Shape::Values => self.values(),
+            Shape::Message => {
+                self.expression();
+                self.tokens_to_line_end();
+            }
             Shape::Include => {
                 self.values();
                 self.after_include = true;

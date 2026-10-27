@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use asm198x_ir::{Expr as Ir, Operation, align_pad, next_pc};
+use asm198x_ir::{DiagSeverity, Expr as Ir, Operation, align_pad, next_pc};
 use isa198x::OperandKind;
 use lang198x_syntax::DiagnosticKind;
 
@@ -197,6 +197,21 @@ fn emit(op: &Operation, mini: &mut Mini, bytes: &mut Vec<u8>) -> Result<(), Stri
                 bytes.extend((0..slot.bytes).map(|i| (v >> (8 * i)) as u8));
             }
         }
+        Operation::Diagnose {
+            severity: DiagSeverity::Error,
+            message,
+        } => return Err(message.clone()),
+        Operation::Diagnose { .. } => return Ok(()),
+        Operation::Assert {
+            cond,
+            fatal,
+            message,
+        } => {
+            return match mini.value(cond) {
+                Some(0) if *fatal => Err(message.clone()),
+                _ => Ok(()),
+            };
+        }
         _ => return Err("not in this test's assembler".to_owned()),
     }
     mini.pc = next_pc(op, mini.pc, &isa198x::mos6502::SET, None, 1, 0).map_err(|e| e.message)?;
@@ -310,6 +325,35 @@ const MEASURED: &[(&str, Option<&str>)] = &[
     (".byte .defined(1)\n", None),
     (".byte .ref(1+v)\n", None),
     (".byte .const(1,2)\n", None),
+    // Messages and assertions.
+    (".out \"hi\"\n.byte 1\n", Some("01")),
+    (".warning \"w\"\n.byte 1\n", Some("01")),
+    (".error \"e\"\n.byte 1\n", None),
+    (".fatal \"f\"\n.byte 1\n", None),
+    (".out 1\n", None),
+    (".out\n", None),
+    (".out \"a\",\"b\"\n", None),
+    (".out .concat(\"a\",\"b\")\n", Some("")),
+    (".if 0\n.error \"e\"\n.endif\n.byte 1\n", Some("01")),
+    (".warning \"a\", \"b\"\n.byte 1\n", Some("01")),
+    (".warning 1\n", None),
+    (".warning .sprintf(\"%c\",255)\n.byte 1\n", Some("01")),
+    (".assert 1, error, \"x\"\n.byte 1\n", Some("01")),
+    (".assert 0, error, \"x\"\n.byte 1\n", None),
+    (".assert 0, warning, \"x\"\n.byte 1\n", Some("01")),
+    (".assert 0, error\n.byte 1\n", None),
+    (".assert 0, ldwarning, \"x\"\n.byte 1\n", Some("01")),
+    (".assert 0, lderror, \"x\"\n.byte 1\n", None),
+    (".assert 1, WARNING, \"a\"\n.byte 1\n", Some("01")),
+    (".assert l=2, error, \"x\"\n.byte 1\nl:\n", None),
+    (".assert l=1, error, \"x\"\n.byte 1\nl:\n", Some("01")),
+    (".assert 2, error\n", Some("")),
+    (".assert 0, bogus\n", None),
+    (".assert 0\n", None),
+    (".assert 0, warning, 1\n.byte 1\n", None),
+    (".warning \"a\" junk\n.byte 1\n", Some("01")),
+    (".out \"a\" junk\n.byte 1\n", None),
+    (".assert 0, warning, \"a\" junk\n.byte 1\n", None),
 ];
 
 #[test]

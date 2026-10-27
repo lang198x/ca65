@@ -544,3 +544,15 @@ proptest! {
         prop_assert_eq!(prepared.diagnostics().iter().collect::<Vec<_>>(), own);
     }
 }
+
+#[test]
+fn a_message_reads_past_its_string() {
+    assert_eq!(
+        line(".warning \"a\" junk, 2"),
+        "(LINE (COMMAND .warning (LITERAL \"a\") (TOKEN_LIST junk , 2)))"
+    );
+    assert_eq!(
+        line(".error \"e\""),
+        "(LINE (COMMAND .error (LITERAL \"e\")))"
+    );
+}
