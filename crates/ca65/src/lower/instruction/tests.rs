@@ -82,7 +82,7 @@ fn encode(op: &Operation, symbols: &dyn Fn(&str) -> Option<i64>) -> Option<Strin
 fn assembled(source: &str, known: &Names) -> Result<String, String> {
     let symbols = |name: &str| match known.name(name) {
         Value::Constant(value) => Some(value),
-        Value::Address(_) | Value::Unknown => known.finals.get(name).copied(),
+        _ => known.finals.get(name).copied(),
     };
     let op = lowered(source, known)?;
     encode(&op, &symbols).ok_or_else(|| "out of range".to_owned())

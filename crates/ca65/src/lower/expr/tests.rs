@@ -142,3 +142,127 @@ fn value_is_a_constant_or_an_address_size() {
     assert_eq!(of("later"), Value::Address(Size::Absolute));
     assert_eq!(of("q*$100"), Value::Constant(0x300));
 }
+
+/// Labels `l` and `r`, at offsets 0 and 1 into segment 0, `o` at offset 0
+/// into segment 1, and the address `*` at offset 2 into segment 0. All are
+/// absolute.
+struct Placed;
+
+impl Known for Placed {
+    fn name(&self, name: &str) -> Value {
+        let placed = |segment, offset| Value::Placed {
+            segment,
+            offset,
+            size: Size::Absolute,
+        };
+        match name {
+            "l" => placed(0, 0),
+            "r" => placed(0, 1),
+            "o" => placed(1, 0),
+            "q" => Value::Constant(3),
+            "k" => Value::Measured {
+                value: 1,
+                size: Size::Absolute,
+            },
+            "e" => Value::Address(Size::Absolute),
+            _ => Value::Unknown,
+        }
+    }
+
+    fn pc(&self) -> Value {
+        Value::Placed {
+            segment: 0,
+            offset: 2,
+            size: Size::Absolute,
+        }
+    }
+}
+
+/// What ca65 V2.19 knows of `text` now, with the labels of [`Placed`].
+fn placed(text: &str) -> Value {
+    let lowered = expression(&immediate(text), &Placed).expect(text);
+    lower::value(&lowered, &Placed)
+}
+
+/// In ca65 V2.19, labels in one segment are a known distance apart, and
+/// may be added, taken away, negated and multiplied by a number. The value
+/// keeps the labels' address size. Measured with `.res` and `lda`.
+#[test]
+fn labels_in_one_segment_are_a_known_distance_apart() {
+    let measured = |value| Value::Measured {
+        value,
+        size: Size::Absolute,
+    };
+    for (text, value) in [
+        ("r-l", 1),
+        ("r-l+l-l+r-l", 2),
+        ("(r-l)*2", 2),
+        ("r*2-l*2", 2),
+        ("r+r-l-l", 2),
+        ("-l+r", 1),
+        ("l+1-l", 1),
+        ("r-l-1+1", 1),
+        ("(r-l)*(r-l)", 1),
+        ("(r-l)/1", 1),
+        ("(r-l)&3", 1),
+        ("(r-l)<<1", 2),
+        ("*-l", 2),
+        ("k+q", 4),
+    ] {
+        assert_eq!(placed(text), measured(value), "{text}");
+    }
+    assert_eq!(placed("q*2"), Value::Constant(6));
+    // `&&` reads no further than it needs to.
+    assert_eq!(placed("0 && (r-l)"), Value::Constant(0));
+    assert_eq!(
+        placed("l+1"),
+        Value::Placed {
+            segment: 0,
+            offset: 1,
+            size: Size::Absolute
+        }
+    );
+    // `<` makes one byte, whatever the labels' size.
+    assert_eq!(
+        placed("<(r-l)"),
+        Value::Measured {
+            value: 1,
+            size: Size::Zero
+        }
+    );
+}
+
+/// What ca65 V2.19 does not know until the link: labels in two segments, a
+/// label added to a label, a label in any other operation, and an import.
+#[test]
+fn other_mixes_of_labels_wait_for_the_link() {
+    for text in ["o-l", "r+l", "r&$FF-l&$FF", "^r-^l", "l*r", "e-l", "f-l"] {
+        assert!(
+            matches!(placed(text), Value::Address(_)),
+            "{text}: {:?}",
+            placed(text)
+        );
+    }
+    // A label times nothing is nothing.
+    assert_eq!(
+        placed("l*0"),
+        Value::Measured {
+            value: 0,
+            size: Size::Absolute
+        }
+    );
+}
+
+/// ca65 V2.19 sizes `lda r-l` by its labels, absolute, though the value is
+/// one, and `lda <(r-l)` as the zero page.
+#[test]
+fn a_distance_takes_its_labels_size() {
+    for (text, size) in [
+        ("r-l", Size::Absolute),
+        ("<(r-l)", Size::Zero),
+        ("q", Size::Zero),
+    ] {
+        let lowered = expression(&immediate(text), &Placed).expect(text);
+        assert_eq!(super::size(&lowered, &Placed), size, "{text}");
+    }
+}
