@@ -21,10 +21,8 @@ use crate::kinds;
 /// A repeat that is running: its body, and how many times are left.
 #[derive(Debug, Clone)]
 pub(super) struct Repeat {
-    /// The body's lines, in the text the repeat is in.
-    body: Vec<Line>,
-    /// The text the body is in.
-    text: TextId,
+    /// The body's lines, each with the text it is in.
+    body: Vec<(Line, TextId)>,
     /// The counter's name, if it has one.
     counter: Option<String>,
     /// The `.repeat` command, where each time round's text is made.
@@ -36,17 +34,15 @@ pub(super) struct Repeat {
 }
 
 impl Repeat {
-    /// A repeat of `body`, in `text`, that runs `count` times.
+    /// A repeat of `body` that runs `count` times.
     pub(super) fn new(
-        body: Vec<Line>,
-        text: TextId,
+        body: Vec<(Line, TextId)>,
         counter: Option<String>,
         site: Span,
         count: u64,
     ) -> Self {
         Self {
             body,
-            text,
             counter,
             site,
             next: 0,
@@ -69,13 +65,13 @@ impl Repeat {
         self.next += 1;
         let call_site = self.site;
         let mut builder = ExpansionBuilder::new();
-        for token in self
-            .body
-            .iter()
-            .flat_map(|line| line.syntax().descendants())
-            .filter_map(SyntaxElement::into_token)
-        {
-            let from = Span::new(self.text, token.text_range());
+        for (token, text) in self.body.iter().flat_map(|(line, text)| {
+            line.syntax()
+                .descendants()
+                .filter_map(SyntaxElement::into_token)
+                .map(|t| (t, *text))
+        }) {
+            let from = Span::new(text, token.text_range());
             if token.kind() == kinds::IDENT && self.counter.as_deref() == Some(token.text()) {
                 builder.push(
                     &number,
@@ -94,8 +90,6 @@ impl Repeat {
 
 /// Where a repeat's body ends.
 pub(super) struct End {
-    /// How many whole lines the body has.
-    pub(super) lines: usize,
     /// The `.endrepeat` that balances the `.repeat`.
     pub(super) token: SyntaxToken,
     /// Whether anything comes before the `.endrepeat` on its line.
@@ -104,11 +98,16 @@ pub(super) struct End {
     pub(super) rest: Vec<SyntaxToken>,
 }
 
-/// Finds the `.endrepeat` that balances a `.repeat` whose body starts at the
-/// first of `lines`, or `None` if there is none.
-pub(super) fn find_end(lines: &[Line]) -> Option<End> {
-    let mut depth = 0_usize;
-    for (index, line) in lines.iter().enumerate() {
+/// Looks for the `.endrepeat` that balances a `.repeat`, one line of its
+/// body at a time.
+#[derive(Debug, Default)]
+pub(super) struct Balance {
+    depth: usize,
+}
+
+impl Balance {
+    /// Where the body ends, if it ends on `line`.
+    pub(super) fn ends_on(&mut self, line: &Line) -> Option<End> {
         let tokens: Vec<SyntaxToken> = line
             .syntax()
             .descendants()
@@ -119,22 +118,21 @@ pub(super) fn find_end(lines: &[Line]) -> Option<End> {
                 continue;
             }
             if is_repeat(token.text()) {
-                depth += 1;
+                self.depth += 1;
             } else if is_end(token.text()) {
-                if depth == 0 {
+                if self.depth == 0 {
                     let first = significant(line).next();
                     return Some(End {
-                        lines: index,
                         token: token.clone(),
                         mid_line: first.is_some_and(|f| f.text_range() != token.text_range()),
                         rest: tokens[at + 1..].to_vec(),
                     });
                 }
-                depth -= 1;
+                self.depth -= 1;
             }
         }
+        None
     }
-    None
 }
 
 /// Whether `word` is `.repeat`.

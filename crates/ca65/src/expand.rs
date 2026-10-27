@@ -10,6 +10,7 @@
 //! define-style macros, token functions and includes in turn.
 
 mod conditional;
+mod defines;
 mod expander;
 mod macros;
 mod repeats;

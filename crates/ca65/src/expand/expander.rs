@@ -1,4 +1,5 @@
-//! Running a program's lines: conditionals, macros, repeats and `.end`.
+//! Running a program's lines: conditionals, macros, repeats, define-style
+//! macros and `.end`.
 //!
 //! The expander follows ca65 V2.19's own model (`OneLine` in `main.c`,
 //! `DoConditionals` in `condasm.c`, and `macro.c`). It reads lines from a
@@ -13,6 +14,10 @@
 //! as a new source. `.repeat` takes the lines up to its `.endrepeat` and runs
 //! them as a new source, made again each time round. Any other line goes to
 //! the host.
+//!
+//! Every line read has its define-style macros expanded first, whether it
+//! runs, is skipped or goes into a body being collected, since ca65 expands
+//! them in its scanner.
 //!
 //! While lines do not run, ca65 skips them token by token, looking only for
 //! conditional commands, wherever they are on a line. So `.byte 1 .endif`
@@ -37,6 +42,7 @@ use lang198x_syntax::{
 };
 
 use super::conditional::{Conditionals, Misfit};
+use super::defines::{self, Define};
 use super::macros::{self, Macro};
 use super::repeats::{self, Repeat};
 use crate::ast::{Command, Expr, Line, MacroCall, NameRef, SourceFile, Statement, View};
@@ -200,6 +206,7 @@ pub struct Expander {
     provenance: Provenance,
     sources: Vec<Source>,
     macros: HashMap<String, Macro>,
+    defines: HashMap<String, Define>,
     /// The number of the next `.local` name.
     next_local: usize,
     lines_read: usize,
@@ -267,6 +274,7 @@ impl Expander {
             provenance: Provenance::new(),
             sources: Vec::new(),
             macros: HashMap::new(),
+            defines: HashMap::new(),
             next_local: 0,
             lines_read: 0,
             expanded_bytes: 0,
@@ -286,6 +294,9 @@ impl Expander {
         while !self.ended {
             let Some((line, problems, text)) = self.read() else {
                 break;
+            };
+            let Some((line, problems, text)) = self.expand_defines(line, problems, text) else {
+                continue;
             };
             if self.lines_read >= self.limits.lines {
                 self.report(
@@ -423,6 +434,20 @@ impl Expander {
                         self.define(&command, text);
                         return None;
                     }
+                    Some(".define") => {
+                        self.define_style(&command, text);
+                        return None;
+                    }
+                    Some(".undef" | ".undefine") => {
+                        if let Some(name) = command.name()
+                            && self.defines.remove(&name.text()).is_none()
+                        {
+                            let message =
+                                format!("no define-style macro is named `{}`", name.text());
+                            self.report(text, name.syntax().text_range(), &message);
+                        }
+                        return None;
+                    }
                     Some(".delmac" | ".delmacro") => {
                         if let Some(name) = command.name()
                             && self.macros.remove(&name.text()).is_none()
@@ -518,19 +543,16 @@ impl Expander {
     fn define(&mut self, command: &Command, text: TextId) {
         let mut body = Vec::new();
         let mut closed = false;
-        if let Some(source) = self.sources.last_mut() {
-            while let Some(line) = source.lines.get(source.next).cloned() {
-                source.next += 1;
-                let ends = matches!(
-                    macros::command_word(&line).as_deref(),
-                    Some(".endmacro" | ".endmac")
-                );
-                if ends {
-                    closed = true;
-                    break;
-                }
-                body.push(line);
+        while let Some((line, line_text)) = self.take() {
+            let ends = matches!(
+                macros::command_word(&line).as_deref(),
+                Some(".endmacro" | ".endmac")
+            );
+            if ends {
+                closed = true;
+                break;
             }
+            body.push((line, line_text));
         }
         let site = command.syntax().text_range();
         if !closed {
@@ -541,7 +563,7 @@ impl Expander {
             // The parser has reported the missing name.
             return;
         };
-        if self.macros.contains_key(&name) {
+        if self.is_defined(&name) {
             let message = format!("a macro named `{name}` is already defined");
             self.report(text, site, &message);
             return;
@@ -550,7 +572,87 @@ impl Expander {
             .params()
             .map(|p| p.names().map(|n| n.text().to_owned()).collect())
             .unwrap_or_default();
-        self.macros.insert(name, Macro::new(params, body, text));
+        self.macros.insert(name, Macro::new(params, body));
+    }
+
+    /// Whether a classic or define-style macro is named `name`: the two
+    /// share their names, as in ca65.
+    fn is_defined(&self, name: &str) -> bool {
+        self.macros.contains_key(name) || self.defines.contains_key(name)
+    }
+
+    /// The next line of the innermost source, with its defines expanded,
+    /// for a body being collected. Nothing on it runs.
+    fn take(&mut self) -> Option<(Line, TextId)> {
+        loop {
+            let source = self.sources.last_mut()?;
+            let line = source.lines.get(source.next).cloned()?;
+            source.next += 1;
+            let text = source.text;
+            if let Some((line, _, text)) = self.expand_defines(line, Vec::new(), text) {
+                return Some((line, text));
+            }
+        }
+    }
+
+    /// `line`, with every use of a define in force expanded and the result
+    /// parsed again, or `None` if a use is broken, which is reported.
+    fn expand_defines(
+        &mut self,
+        line: Line,
+        problems: Vec<Diagnostic>,
+        text: TextId,
+    ) -> Option<(Line, Vec<Diagnostic>, TextId)> {
+        let room = self
+            .limits
+            .expanded_bytes
+            .saturating_sub(self.expanded_bytes);
+        let pieces = match defines::expand(&self.defines, &line, text, room) {
+            Ok(None) => return Some((line, problems, text)),
+            Ok(Some(pieces)) => pieces,
+            Err(problem) => {
+                self.report(problem.site.text(), problem.site.range(), &problem.message);
+                if problem.message.contains("too much text") {
+                    self.ended = true;
+                }
+                return None;
+            }
+        };
+        let mut builder = ExpansionBuilder::new();
+        for piece in &pieces {
+            builder.push(&piece.text, piece.origin);
+        }
+        self.expanded_bytes += pieces.iter().map(|p| p.text.len()).sum::<usize>();
+        let Some((id, source)) = self.add_text(builder, None) else {
+            self.report(
+                text,
+                line.syntax().text_range(),
+                "this line's defines could not be expanded",
+            );
+            return None;
+        };
+        let expanded = source.lines.into_iter().next()?;
+        let problems = source.line_problems.into_iter().next().unwrap_or_default();
+        Some((expanded, problems, id))
+    }
+
+    /// `.define name[(params)] body`.
+    fn define_style(&mut self, command: &Command, text: TextId) {
+        let site = command.syntax().text_range();
+        match Define::from_command(command, text) {
+            Ok(None) => {}
+            Ok(Some((name, _))) if self.is_defined(&name) => {
+                let message = format!("a macro named `{name}` is already defined");
+                self.report(text, site, &message);
+            }
+            Ok(Some((name, _))) if self.mode.cpu().is_mnemonic(&name) => {
+                self.report(text, site, "an instruction cannot be a macro's name");
+            }
+            Ok(Some((name, define))) => {
+                self.defines.insert(name, define);
+            }
+            Err(message) => self.report(text, site, &message),
+        }
     }
 
     /// A call of a defined macro: its text becomes the next source.
@@ -646,27 +748,29 @@ impl Expander {
                 "`.repeat` takes a count and a counter, no more",
             );
         }
-        let Some(source) = self.sources.last_mut() else {
-            return;
+        let mut balance = repeats::Balance::default();
+        let mut body = Vec::new();
+        let end = loop {
+            let Some((line, line_text)) = self.take() else {
+                self.report(text, site.range(), "this `.repeat` has no `.endrepeat`");
+                return;
+            };
+            if let Some(end) = balance.ends_on(&line) {
+                break (end, line_text);
+            }
+            body.push((line, line_text));
         };
-        let rest = source.lines.get(source.next..).unwrap_or_default();
-        let Some(end) = repeats::find_end(rest) else {
-            source.next = source.lines.len();
-            self.report(text, site.range(), "this `.repeat` has no `.endrepeat`");
-            return;
-        };
-        let body = rest[..end.lines].to_vec();
-        source.next += end.lines + 1;
-        self.refuse_rest(&end.rest, text);
+        let (end, end_text) = end;
+        self.refuse_rest(&end.rest, end_text);
         if end.mid_line && count > 0 {
             self.report_kind(
                 DiagnosticKind::Unsupported,
-                Span::new(text, end.token.text_range()),
+                Span::new(end_text, end.token.text_range()),
                 "a `.endrepeat` after other tokens on its line is not supported",
             );
             return;
         }
-        self.run_again(Repeat::new(body, text, counter, site, count));
+        self.run_again(Repeat::new(body, counter, site, count));
     }
 
     /// Runs a repeat's body once more, if it has more times to run.
