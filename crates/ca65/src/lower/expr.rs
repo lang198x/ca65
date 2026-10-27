@@ -202,7 +202,15 @@ fn number(text: &str) -> Option<i64> {
 /// value needs. Otherwise each name takes its own size, an unknown name
 /// absolute, and `<`, `>` and `^` make one byte.
 pub(super) fn size(expr: &Ir, known: &dyn Known) -> Size {
-    let constant = |name: &str| match known.name(name) {
+    match constant(expr, known) {
+        Some(value) => Size::of(value),
+        None => structural(expr, known).unwrap_or(Size::Absolute),
+    }
+}
+
+/// The value of `expr` if it is known now: every name in it a constant.
+pub(super) fn constant(expr: &Ir, known: &dyn Known) -> Option<i64> {
+    let value = |name: &str| match known.name(name) {
         Value::Constant(value) => Some(value),
         Value::Address(_) | Value::Unknown => None,
     };
@@ -210,10 +218,7 @@ pub(super) fn size(expr: &Ir, known: &dyn Known) -> Size {
         Value::Constant(value) => Some(value),
         Value::Address(_) | Value::Unknown => None,
     };
-    if let Ok(value) = expr.eval_with(&constant, pc, 0) {
-        return Size::of(value);
-    }
-    structural(expr, known).unwrap_or(Size::Absolute)
+    expr.eval_with(&value, pc, 0).ok()
 }
 
 fn structural(expr: &Ir, known: &dyn Known) -> Option<Size> {

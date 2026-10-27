@@ -8,7 +8,7 @@
 //! labels, assignments, instructions, expressions, control commands in
 //! their own shapes, and macro definitions and calls; typed views over the
 //! tree; and preprocessing in [`expand`]. With the `ir` feature, `lower`
-//! lowers expressions and instructions to `asm198x-ir`. The plan, in the
+//! lowers expressions, instructions and whole lines to `asm198x-ir`. The plan, in the
 //! Lang198x hub's `docs/plans/ca65-front-end.md`, adds the rest of lowering
 //! in turn, each step checked against ca65's own answers.
 //!
