@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.12](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.11...lang198x-ca65-v0.0.12) - 2026-10-27
+
+### Added
+
+- lower the forms of `.dbg` a program writes by hand
+- lower ca65's settings and constructor tables
+
 ## [0.0.11](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.10...lang198x-ca65-v0.0.11) - 2026-10-27
 
 ### Added
