@@ -11,6 +11,7 @@ use crate::ast::View;
 mod defines;
 mod functions;
 mod host;
+mod includes;
 mod repeats;
 
 use host::run;

@@ -1,10 +1,10 @@
 //! Running a program's lines: conditionals, macros, repeats, define-style
-//! macros and `.end`.
+//! macros, token functions, includes and `.end`.
 //!
 //! The expander follows ca65 V2.19's own model (`OneLine` in `main.c`,
 //! `DoConditionals` in `condasm.c`, and `macro.c`). It reads lines from a
-//! stack of sources: the program's file at the bottom, and above it the text
-//! of each macro call or repeat being run. It keeps the stack of open
+//! stack of sources: the program's file at the bottom, and above it each
+//! file included and the text of each macro call or repeat being run. It keeps the stack of open
 //! conditionals, which is not tied to the sources: a conditional may open in
 //! one time round a repeat and close in the next, as in ca65.
 //!
@@ -69,6 +69,10 @@ pub struct Limits {
     /// How many bytes of macro text may be made in all. A macro that passes
     /// its argument on to itself makes text that grows at every level.
     pub expanded_bytes: usize,
+    /// How deeply `.include` and `.macpack` may nest. ca65 V2.19 stops only
+    /// when it runs out of open files; a file that includes itself needs a
+    /// bound.
+    pub include_depth: usize,
 }
 
 impl Default for Limits {
@@ -77,6 +81,7 @@ impl Default for Limits {
             lines: 10_000_000,
             macro_depth: 256,
             expanded_bytes: 64 * 1024 * 1024,
+            include_depth: 64,
         }
     }
 }
@@ -103,6 +108,51 @@ pub trait Host {
 
     /// Whether `expr` has a value now, for `.ifconst` and `.ifnconst`.
     fn is_constant(&mut self, expr: &Expr) -> bool;
+
+    /// The text of the file `.include` names, or `None` if there is no such
+    /// file. `from` is the file being read, since ca65 looks beside it
+    /// first. The default has no files.
+    fn include(&mut self, name: &str, from: FileId) -> Option<String> {
+        let _ = (name, from);
+        None
+    }
+
+    /// The text of the macro package `.macpack` names, such as `generic`,
+    /// or `None` if there is no such package. ca65 V2.19 reads `name.mac`
+    /// from its include path. The default has no packages.
+    fn package(&mut self, name: &str) -> Option<String> {
+        let _ = name;
+        None
+    }
+}
+
+/// A file `.include` or `.macpack` read in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncludedFile {
+    id: FileId,
+    name: String,
+    site: Span,
+}
+
+impl IncludedFile {
+    /// Returns the file's ID. The root file is 0, and each file read in
+    /// takes the next, in the order it was read.
+    #[must_use]
+    pub fn id(&self) -> FileId {
+        self.id
+    }
+
+    /// Returns the name the command gave: a file name, or a package name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the command that read the file in.
+    #[must_use]
+    pub fn site(&self) -> Span {
+        self.site
+    }
 }
 
 /// A line for the host to assemble.
@@ -213,6 +263,7 @@ pub struct Expander {
     lines_read: usize,
     expanded_bytes: usize,
     conditionals: Conditionals,
+    files: Vec<IncludedFile>,
     ended: bool,
     finished: bool,
     diagnostics: Vec<(TextId, Diagnostic)>,
@@ -280,6 +331,7 @@ impl Expander {
             lines_read: 0,
             expanded_bytes: 0,
             conditionals: Conditionals::default(),
+            files: Vec::new(),
             ended: false,
             finished: false,
             diagnostics: Vec::new(),
@@ -317,6 +369,7 @@ impl Expander {
             else {
                 continue;
             };
+            let (line, problems, text) = self.resolve(line, problems, text);
             for problem in problems {
                 self.diagnostics.push((text, problem));
             }
@@ -332,6 +385,12 @@ impl Expander {
     #[must_use]
     pub fn diagnostics(&self) -> &[(TextId, Diagnostic)] {
         &self.diagnostics
+    }
+
+    /// Returns the files `.include` and `.macpack` have read in so far.
+    #[must_use]
+    pub fn files(&self) -> &[IncludedFile] {
+        &self.files
     }
 
     /// Returns where every macro call's text came from.
@@ -398,9 +457,142 @@ impl Expander {
             if self.sources.len() == 1 {
                 return None;
             }
-            if let Some(repeat) = self.sources.pop().and_then(|s| s.repeat) {
-                self.run_again(repeat);
+            self.leave();
+        }
+    }
+
+    /// Leaves the innermost source, which has run out. A repeat runs again;
+    /// leaving an included file closes the conditionals opened in it, as ca65
+    /// does, each with a diagnostic.
+    fn leave(&mut self) {
+        let Some(source) = self.sources.pop() else {
+            return;
+        };
+        if let Some(repeat) = source.repeat {
+            self.run_again(repeat);
+        }
+        if matches!(source.text, TextId::File(_)) {
+            for site in self.conditionals.close_opened_in(source.text) {
+                self.report(
+                    site.text(),
+                    site.range(),
+                    "this conditional is never closed with `.endif` in its file",
+                );
             }
+        }
+    }
+
+    /// The `.include` or `.macpack` that read in `text`, if it is a file
+    /// read in.
+    fn include_site(&self, text: TextId) -> Option<Span> {
+        self.files
+            .iter()
+            .find(|f| TextId::File(f.id) == text)
+            .map(IncludedFile::site)
+    }
+
+    /// How a piece copied unchanged from `from` came there.
+    fn copied(&self, from: Span) -> Origin {
+        match self.include_site(from.text()) {
+            Some(site) => Origin::Included { from, site },
+            None => Origin::Source { from },
+        }
+    }
+
+    /// The file being read: the innermost file on the stack of sources.
+    fn current_file(&self) -> FileId {
+        self.sources
+            .iter()
+            .rev()
+            .find_map(|s| match s.text {
+                TextId::File(id) => Some(id),
+                TextId::Expansion(_) => None,
+            })
+            .unwrap_or(FileId::new(0))
+    }
+
+    /// `.include "name"` or `.macpack name`: the file is read in as the next
+    /// source.
+    fn include(&mut self, command: &Command, word: &str, text: TextId, host: &mut dyn Host) {
+        let site = Span::new(text, command.syntax().text_range());
+        let mut values = command.values();
+        let value = values.next();
+        if let Some(extra) = values.next() {
+            self.report(
+                text,
+                extra.syntax().text_range(),
+                "expected the end of the line",
+            );
+            return;
+        }
+        if value.is_none() {
+            let message = if word == ".include" {
+                "`.include` needs a file name in quotes"
+            } else {
+                "`.macpack` needs a package's name"
+            };
+            self.report(text, site.range(), message);
+            return;
+        }
+        let name = match (&value, word) {
+            (Some(Expr::Literal(literal)), ".include") => literal
+                .token()
+                .filter(|t| t.kind() == kinds::STRING)
+                .map(|t| {
+                    let text = t.text().strip_prefix('"').unwrap_or(t.text());
+                    text.strip_suffix('"').unwrap_or(text).to_owned()
+                }),
+            (Some(Expr::Name(name)), ".macpack")
+                if !name.is_global() && name.parts().count() == 1 =>
+            {
+                Some(name.text())
+            }
+            _ => None,
+        };
+        let Some(name) = name else {
+            let message = if word == ".include" {
+                "`.include` needs a file name in quotes"
+            } else {
+                "`.macpack` needs a package's name"
+            };
+            self.report(text, site.range(), message);
+            return;
+        };
+        let depth = self
+            .sources
+            .iter()
+            .skip(1)
+            .filter(|s| matches!(s.text, TextId::File(_)))
+            .count();
+        if depth >= self.limits.include_depth {
+            let message =
+                format!("includes nest too deeply at `{name}`; does a file include itself?");
+            self.report(text, site.range(), &message);
+            return;
+        }
+        let from = self.current_file();
+        let loaded = if word == ".include" {
+            host.include(&name, from)
+        } else {
+            host.package(&name)
+        };
+        let Some(loaded) = loaded else {
+            let message = if word == ".include" {
+                format!("there is no file `{name}` to include")
+            } else {
+                format!("there is no macro package `{name}`")
+            };
+            self.report(text, site.range(), &message);
+            return;
+        };
+        let Ok(number) = u32::try_from(self.files.len() + 1) else {
+            return;
+        };
+        let id = FileId::new(number);
+        self.files.push(IncludedFile { id, name, site });
+        match self.load(TextId::File(id), &loaded, None, true) {
+            Ok(source) => self.sources.push(source),
+            Err(_) => self.report(text, site.range(), "the included file is too long to read"),
         }
     }
 
@@ -422,7 +614,6 @@ impl Expander {
     /// A line while lines run: the expander's own commands run here, and
     /// anything else is the host's.
     fn run(&mut self, line: Line, text: TextId, host: &mut dyn Host) -> Option<ActiveLine> {
-        let (line, text) = self.reparse_if_stale(&line, text).unwrap_or((line, text));
         match line.statement() {
             Some(Statement::Command(command)) => {
                 let word = command.word().map(|w| w.text().to_ascii_lowercase());
@@ -442,6 +633,15 @@ impl Expander {
                     Some(".define") => {
                         self.define_style(&command, text);
                         return None;
+                    }
+                    Some(word @ (".include" | ".macpack")) => {
+                        let labelled = line.label().is_some() || line.unnamed_label().is_some();
+                        self.include(&command, word, text, host);
+                        return labelled.then_some(ActiveLine {
+                            line,
+                            text,
+                            label_only: true,
+                        });
                     }
                     Some(".undef" | ".undefine") => {
                         if let Some(name) = command.name()
@@ -508,26 +708,35 @@ impl Expander {
     /// parsed is parsed again, on its own, with the macros actually
     /// defined: one defined in a skipped branch is not, and one deleted is
     /// gone.
-    fn reparse_if_stale(&mut self, line: &Line, text: TextId) -> Option<(Line, TextId)> {
-        let head = macros::head_name(line, |name| self.macros.contains_key(name))?;
-        let parsed_as_call = matches!(line.statement(), Some(Statement::MacroCall(_)));
-        let is_macro = self.macros.contains_key(&head);
-        if parsed_as_call == is_macro {
-            return None;
+    ///
+    /// So is a line the parser could only guess at, after an `.include`: by
+    /// now the expander knows which macros exist.
+    fn resolve(
+        &mut self,
+        line: Line,
+        problems: Vec<Diagnostic>,
+        text: TextId,
+    ) -> (Line, Vec<Diagnostic>, TextId) {
+        let guessed = problems.iter().any(|p| p.kind() == DiagnosticKind::Unknown);
+        let stale =
+            macros::head_name(&line, |name| self.macros.contains_key(name)).is_some_and(|head| {
+                let parsed_as_call = matches!(line.statement(), Some(Statement::MacroCall(_)));
+                parsed_as_call != self.macros.contains_key(&head)
+            });
+        if !guessed && !stale {
+            return (line, problems, text);
         }
         let mut builder = ExpansionBuilder::new();
-        builder.push(
-            line.syntax().text(),
-            Origin::Source {
-                from: Span::new(text, line.syntax().text_range()),
-            },
-        );
-        let (id, source) = self.add_text(builder, None)?;
-        let reparsed = source.lines.first().cloned()?;
-        for problem in source.line_problems.into_iter().flatten() {
-            self.diagnostics.push((id, problem));
-        }
-        Some((reparsed, id))
+        let from = Span::new(text, line.syntax().text_range());
+        builder.push(line.syntax().text(), self.copied(from));
+        let Some((id, source)) = self.add_text(builder, None) else {
+            return (line, problems, text);
+        };
+        let Some(reparsed) = source.lines.first().cloned() else {
+            return (line, problems, text);
+        };
+        let problems = source.line_problems.into_iter().flatten().collect();
+        (reparsed, problems, id)
     }
 
     /// Adds an expansion's text to the provenance and parses it.
@@ -591,7 +800,17 @@ impl Expander {
     fn take(&mut self) -> Option<(Line, TextId)> {
         loop {
             let source = self.sources.last_mut()?;
-            let line = source.lines.get(source.next).cloned()?;
+            let Some(line) = source.lines.get(source.next).cloned() else {
+                // A body may run on past the end of an included file, as
+                // ca65 reads tokens, but not past a macro's or repeat's text.
+                let included = self.sources.len() > 1
+                    && matches!(self.sources.last().map(|s| s.text), Some(TextId::File(_)));
+                if !included {
+                    return None;
+                }
+                self.leave();
+                continue;
+            };
             source.next += 1;
             let text = source.text;
             if let Some((line, _, text)) = self.expand_defines(line, Vec::new(), text) {
@@ -612,7 +831,8 @@ impl Expander {
             .limits
             .expanded_bytes
             .saturating_sub(self.expanded_bytes);
-        let pieces = match defines::expand(&self.defines, &line, text, room) {
+        let site = self.include_site(text);
+        let pieces = match defines::expand(&self.defines, &line, text, site, room) {
             Ok(None) => return Some((line, problems, text)),
             Ok(Some(pieces)) => pieces,
             Err(problem) => {
@@ -660,7 +880,7 @@ impl Expander {
             .filter_map(SyntaxElement::into_token)
             .map(|t| {
                 let from = Span::new(text, t.text_range());
-                Piece::new(&t, Origin::Source { from }, from)
+                Piece::new(&t, self.copied(from), from)
             })
             .collect();
         if !functions::any(&pieces) {

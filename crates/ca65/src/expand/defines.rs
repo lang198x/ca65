@@ -126,11 +126,13 @@ impl Problem {
 }
 
 /// The pieces of `line`, in `text`, with every use of a define in force
-/// expanded, or `None` if it uses none. `limit` bounds the bytes made.
+/// expanded, or `None` if it uses none. `included_at` is the `.include`
+/// that read `text` in, if it did. `limit` bounds the bytes made.
 pub(super) fn expand(
     defines: &HashMap<String, Define>,
     line: &Line,
     text: TextId,
+    included_at: Option<Span>,
     limit: usize,
 ) -> Result<Option<Vec<Piece>>, Problem> {
     let tokens: Vec<SyntaxToken> = line
@@ -148,7 +150,11 @@ pub(super) fn expand(
         .iter()
         .map(|t| {
             let from = Span::new(text, t.text_range());
-            Piece::new(t, Origin::Source { from }, from)
+            let origin = match included_at {
+                Some(site) => Origin::Included { from, site },
+                None => Origin::Source { from },
+            };
+            Piece::new(t, origin, from)
         })
         .collect();
     let mut stream = Stream {

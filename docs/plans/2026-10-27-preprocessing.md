@@ -144,6 +144,22 @@ this syntax and are reported as unsupported.
 `Included` provenance. Missing files, cycles and deep nesting give
 diagnostics. `.incbin` stays a command for lowering.
 
+As built: the loader is two methods of the host, `include` and `package`,
+which return `None` by default. A file is read when its line runs, never in a
+skipped branch or a body being collected, and is asked for with the file
+being read, since ca65 looks beside that first. `.macpack name` asks for the
+package by name; ca65 V2.19 reads `name.mac` from its include path. Each file
+read in takes the next `FileId`, and `Expander::files` lists them with the
+command that read them in. A line copied from one carries `Included`
+provenance.
+
+As in ca65, a macro's or repeat's body may run on past the end of an
+included file, and a file may close a conditional opened before it, but a
+conditional opened in a file is closed, with a diagnostic, when the file
+ends. A line the parser had to guess at after an include is read again now
+that the macros are known. Includes nest at most 64 deep, so a file that
+includes itself stops.
+
 ## Afterwards
 
 Step 6, in Asm198x, lowers the lines the expander hands over and gates the
