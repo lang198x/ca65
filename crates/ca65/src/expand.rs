@@ -12,6 +12,7 @@
 mod conditional;
 mod expander;
 mod macros;
+mod repeats;
 
 pub use expander::{ActiveLine, Expander, Host, Limits};
 
