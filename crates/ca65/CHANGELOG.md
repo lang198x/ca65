@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.7](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.6...lang198x-ca65-v0.0.7) - 2026-10-27
+
+### Added
+
+- give ca65's remaining functions of tokens and symbols
+
 ## [0.0.6](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.5...lang198x-ca65-v0.0.6) - 2026-10-27
 
 ### Added
