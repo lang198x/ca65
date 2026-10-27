@@ -14,10 +14,12 @@ mod conditional;
 mod defines;
 mod expander;
 mod functions;
+mod locate;
 mod macros;
 mod repeats;
 
 pub use expander::{ActiveLine, Expander, Host, IncludedFile, Limits};
+pub use locate::Location;
 
 #[cfg(test)]
 mod tests;

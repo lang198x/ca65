@@ -10,7 +10,7 @@ use crate::ast::View;
 
 mod defines;
 mod functions;
-mod host;
+pub(crate) mod host;
 mod includes;
 mod repeats;
 

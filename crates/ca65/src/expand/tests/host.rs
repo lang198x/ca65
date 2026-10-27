@@ -9,7 +9,7 @@ use crate::expand::{ActiveLine, Expander, Host};
 use lang198x_syntax::FileId;
 
 #[derive(Default)]
-pub(super) struct TestHost {
+pub(crate) struct TestHost {
     symbols: HashMap<String, i64>,
     referenced: HashSet<String>,
     pc: i64,
@@ -24,7 +24,7 @@ pub(super) struct TestHost {
 
 impl TestHost {
     /// A host that can include `files`.
-    pub(super) fn with_files(files: &[(&str, &str)]) -> Self {
+    pub(crate) fn with_files(files: &[(&str, &str)]) -> Self {
         Self {
             files: files
                 .iter()
