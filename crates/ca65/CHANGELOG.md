@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.11](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.10...lang198x-ca65-v0.0.11) - 2026-10-27
+
+### Added
+
+- say which macro call made a line
+
+### Fixed
+
+- follow ca65 V2.19 on `.end`, `.reloc`, `.asciiz` and bodies
+
 ## [0.0.10](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.9...lang198x-ca65-v0.0.10) - 2026-10-27
 
 ### Added
