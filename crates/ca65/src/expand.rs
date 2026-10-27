@@ -12,6 +12,7 @@
 mod conditional;
 mod defines;
 mod expander;
+mod functions;
 mod macros;
 mod repeats;
 
