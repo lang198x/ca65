@@ -28,6 +28,63 @@ pub(super) fn line_starts(text: &str) -> Vec<TextSize> {
 }
 
 impl Expander {
+    /// Returns the outermost macro call that made `span`, as a span in the
+    /// text the call is in, or `None` if no macro call made it. A repeat's
+    /// lines, and the text a define or a token function makes, are not a
+    /// call's. ca65's own debug information gives the lines a macro makes
+    /// to the line that called it, and a repeat's lines to themselves.
+    ///
+    /// ```
+    /// use lang198x_ca65::ast::{Expr, NameRef};
+    /// use lang198x_ca65::expand::{Expander, Host};
+    /// use lang198x_ca65::Profile;
+    ///
+    /// struct One;
+    ///
+    /// impl Host for One {
+    ///     fn evaluate(&mut self, _: &Expr) -> Result<i64, String> {
+    ///         Ok(1)
+    ///     }
+    ///     fn is_defined(&mut self, _: &NameRef) -> bool {
+    ///         false
+    ///     }
+    ///     fn is_referenced(&mut self, _: &NameRef) -> bool {
+    ///         false
+    ///     }
+    ///     fn is_constant(&mut self, _: &Expr) -> bool {
+    ///         true
+    ///     }
+    /// }
+    ///
+    /// let source = ".macro m\n  nop\n.endmacro\nm\n.repeat 1\n  nop\n.endrepeat\n";
+    /// let mut expander = Expander::new(source, Profile::CA65_2_19_6502)?;
+    /// let line = expander.next_line(&mut One).expect("the macro's line");
+    /// let call = expander.macro_call(line.span()).expect("a call");
+    /// assert_eq!(expander.locate(call).map(|at| at.line), Some(4));
+    /// let line = expander.next_line(&mut One).expect("the repeat's line");
+    /// assert_eq!(expander.macro_call(line.span()), None);
+    /// # Ok::<(), lang198x_ca65::ParseError>(())
+    /// ```
+    #[must_use]
+    pub fn macro_call(&self, span: Span) -> Option<Span> {
+        let mut call = None;
+        let mut at = span;
+        while let TextId::Expansion(id) = at.text() {
+            let origin = self.provenance().get(id)?.origin_at(at.range().start())?;
+            at = match (origin.site(), origin.copied_from()) {
+                (Some(site), _) => {
+                    if self.macro_texts.contains(&id) {
+                        call = Some(site);
+                    }
+                    site
+                }
+                (None, Some(from)) => from,
+                (None, None) => break,
+            };
+        }
+        call
+    }
+
     /// Returns where `span` starts in a file a person wrote, following it
     /// back through includes, macros, repeats, define-style macros and
     /// token functions. Text a token function made traces to the call.
