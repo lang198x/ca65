@@ -13,7 +13,7 @@
 
 use lang198x_syntax::{Origin, Span, SyntaxElement, SyntaxKind, SyntaxToken, TextId};
 
-use super::made::Made;
+use super::made::{Made, Strings};
 use crate::ast::{Line, MacroCall, Statement, View};
 use crate::kinds;
 
@@ -64,7 +64,13 @@ impl Macro {
 
     /// The text of a call, with its pieces' origins and tokens. `first_local`
     /// numbers the call's first local name, so each call's names are its own.
-    pub(super) fn expand(&self, call: &MacroCall, call_text: TextId, first_local: usize) -> Made {
+    pub(super) fn expand(
+        &self,
+        call: &MacroCall,
+        call_text: TextId,
+        first_local: usize,
+        strings: &Strings,
+    ) -> Made {
         let call_site = Span::new(call_text, call.syntax().text_range());
         // Each argument's tokens, from its first to its last, with the space
         // between them, as they were made.
@@ -109,7 +115,7 @@ impl Macro {
                 {
                     for arg in args.get(index).into_iter().flatten().flatten() {
                         let from = Span::new(call_text, arg.text_range());
-                        builder.token(arg, Origin::Expanded { from, call_site });
+                        builder.token(arg, from, Origin::Expanded { from, call_site }, strings);
                     }
                 } else if matches!(token.kind(), kinds::IDENT | kinds::CHEAP_IDENT)
                     && let Some(index) = self.locals.iter().position(|l| l == token.text())
@@ -126,7 +132,7 @@ impl Macro {
                 {
                     synthesised(&args.len().to_string(), kinds::NUMBER, &mut builder);
                 } else {
-                    builder.token(&token, Origin::Expanded { from, call_site });
+                    builder.token(&token, from, Origin::Expanded { from, call_site }, strings);
                 }
             }
         }

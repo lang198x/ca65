@@ -19,7 +19,7 @@
 
 use lang198x_syntax::{Origin, Span, SyntaxElement, SyntaxToken, TextId};
 
-use super::made::Made;
+use super::made::{Made, Strings};
 
 use super::macros::significant;
 use crate::ast::{Line, View};
@@ -70,7 +70,7 @@ impl Repeat {
     /// The text of the next time round, with its pieces' origins, or `None`
     /// once the body has run `count` times. A round ends with the tokens
     /// before a mid-line `.endrepeat`, which leave its last line unfinished.
-    pub(super) fn next_time(&mut self) -> Option<Made> {
+    pub(super) fn next_time(&mut self, strings: &Strings) -> Option<Made> {
         if self.next >= self.count || (self.body.is_empty() && self.tail.is_empty()) {
             return None;
         }
@@ -83,18 +83,25 @@ impl Repeat {
                 .descendants()
                 .filter_map(SyntaxElement::into_token)
             {
-                self.push(&mut builder, &token, *text, round);
+                self.push(&mut builder, &token, *text, round, strings);
             }
         }
         for (token, text) in &self.tail {
-            self.push(&mut builder, token, *text, round);
+            self.push(&mut builder, token, *text, round, strings);
         }
         Some(builder)
     }
 
     /// Adds `token`, in `text`, to a round's text, with the counter replaced
     /// by the round's number.
-    fn push(&self, builder: &mut Made, token: &SyntaxToken, text: TextId, round: u64) {
+    fn push(
+        &self,
+        builder: &mut Made,
+        token: &SyntaxToken,
+        text: TextId,
+        round: u64,
+        strings: &Strings,
+    ) {
         let from = Span::new(text, token.text_range());
         let call_site = self.site;
         if token.kind() == kinds::IDENT && self.counter.as_deref() == Some(token.text()) {
@@ -107,7 +114,7 @@ impl Repeat {
                 },
             );
         } else {
-            builder.token(token, Origin::Expanded { from, call_site });
+            builder.token(token, from, Origin::Expanded { from, call_site }, strings);
         }
     }
 }
