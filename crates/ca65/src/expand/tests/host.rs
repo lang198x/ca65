@@ -1,5 +1,5 @@
 //! A tiny assembler, just enough to compare the expander's lines with ca65's
-//! bytes: labels, `=`, `.byte`, `.word`, `nop` and `rts`.
+//! bytes: labels, `=`, `.byte`, `.word`, `nop`, `rts` and `lda #value`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -46,6 +46,7 @@ impl TestHost {
             Expr::Unary(unary) => {
                 let operand = self.value(&unary.operand().ok_or("no operand")?)?;
                 match unary.op().map(|t| t.text().to_owned()).as_deref() {
+                    Some("+") => operand,
                     Some("-") => -operand,
                     Some("!") => truth(operand == 0),
                     Some("<") => operand & 0xFF,
@@ -75,7 +76,14 @@ impl TestHost {
     fn assemble(&mut self, active: &ActiveLine) {
         let line = active.line();
         if let Some(name) = line.label().and_then(|l| l.name()) {
-            self.symbols.insert(name.text(), self.pc);
+            // ca65 refuses a label defined twice.
+            if self.symbols.insert(name.text(), self.pc).is_some() {
+                self.problems
+                    .push(format!("`{}` is defined twice", name.text()));
+            }
+        }
+        if active.label_only() {
+            return;
         }
         let result = match line.statement() {
             None => Ok(()),
@@ -113,6 +121,18 @@ impl TestHost {
                         self.emit(0x60, 1);
                         Ok(())
                     }
+                    Some("lda") => instruction
+                        .operands()
+                        .next()
+                        .and_then(|o| o.immediate())
+                        .and_then(|i| i.expr())
+                        .ok_or_else(|| "only `lda #value` here".to_owned())
+                        .and_then(|value| {
+                            let value = self.value(&value)?;
+                            self.emit(0xA9, 1);
+                            self.emit(value, 1);
+                            Ok(())
+                        }),
                     other => Err(format!("no instruction {other:?} here")),
                 }
             }
