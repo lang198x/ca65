@@ -43,9 +43,9 @@ measured on V2.19 at `8d86ca7`:
 
 - **The expander walks the program once and asks a host about values,** as in
   `z80-asm`. A condition, a repeat count or a token function's count needs
-  symbols, and only the assembler knows them. The host evaluates an
-  expression view, including `.defined`, `.referenced` and `.const`, so
-  `.ifdef x` is asked as `.defined(x)`.
+  symbols, and only the assembler knows them. The host evaluates expression
+  views, and says whether a name is defined or used and whether an
+  expression is constant yet, for `.ifdef`, `.ifref` and `.ifconst`.
 - **Files come from a loader the caller supplies.** The crate never touches
   the file system. `.macpack` asks the loader for the package's text by name.
   The crate ships no text from cc65; Asm198x decides where packages come from.
