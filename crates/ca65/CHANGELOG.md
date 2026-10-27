@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.13](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.12...lang198x-ca65-v0.0.13) - 2026-10-27
+
+### Added
+
+- know the distance between two labels in one segment
+
 ## [0.0.12](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.11...lang198x-ca65-v0.0.12) - 2026-10-27
 
 ### Added
