@@ -16,7 +16,8 @@ git_tag_enable = true
 changelog_update = true
 # Only reader-facing changes earn a release. Release-process work uses `ci:` or
 # `chore(release):`; changelog filtering alone does not prevent a version bump.
-release_commits = "^(feat|fix|perf|revert)[(:]"
+# A breaking change, such as `feat!:`, earns one too.
+release_commits = "^(feat|fix|perf|revert)(\\([^)]*\\))?!?:"
 # Package-prefixed tags even with a single crate, so a second crate stays
 # unambiguous later. The first release tag is made by hand at the first
 # publish, before Trusted Publishing is registered.
