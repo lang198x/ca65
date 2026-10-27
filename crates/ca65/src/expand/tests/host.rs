@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use crate::Profile;
 use crate::ast::{Expr, NameRef, Statement, View};
 use crate::expand::{ActiveLine, Expander, Host};
+use lang198x_syntax::FileId;
 
 #[derive(Default)]
 pub(super) struct TestHost {
@@ -14,9 +15,25 @@ pub(super) struct TestHost {
     pc: i64,
     pub(super) bytes: Vec<u8>,
     pub(super) problems: Vec<String>,
+    /// The files `.include` may read, by name, and the packages
+    /// `.macpack` may, by name with `.mac` added.
+    pub(super) files: HashMap<String, String>,
+    /// Each file asked for, and the file asked from.
+    pub(super) asked: Vec<(String, u32)>,
 }
 
 impl TestHost {
+    /// A host that can include `files`.
+    pub(super) fn with_files(files: &[(&str, &str)]) -> Self {
+        Self {
+            files: files
+                .iter()
+                .map(|(name, text)| ((*name).to_owned(), (*text).to_owned()))
+                .collect(),
+            ..Self::default()
+        }
+    }
+
     fn value(&mut self, expr: &Expr) -> Result<i64, String> {
         let truth = |b: bool| i64::from(b);
         Ok(match expr {
@@ -73,7 +90,7 @@ impl TestHost {
     }
 
     /// Assembles one line the expander hands over.
-    fn assemble(&mut self, active: &ActiveLine) {
+    pub(super) fn assemble(&mut self, active: &ActiveLine) {
         let line = active.line();
         if let Some(name) = line.label().and_then(|l| l.name()) {
             // ca65 refuses a label defined twice.
@@ -177,13 +194,27 @@ impl Host for TestHost {
         let uses_address = expr.syntax().text().contains('*');
         !uses_address && self.value(expr).is_ok()
     }
+
+    fn include(&mut self, name: &str, from: FileId) -> Option<String> {
+        self.asked.push((name.to_owned(), from.get()));
+        self.files.get(name).cloned()
+    }
+
+    fn package(&mut self, name: &str) -> Option<String> {
+        self.files.get(&format!("{name}.mac")).cloned()
+    }
 }
 
 /// What a program gives: its bytes, or every problem the expander and the
 /// host found.
 pub(super) fn run(source: &str) -> Result<Vec<u8>, Vec<String>> {
+    run_with(source, &[])
+}
+
+/// What a program gives, with `files` for it to include.
+pub(super) fn run_with(source: &str, files: &[(&str, &str)]) -> Result<Vec<u8>, Vec<String>> {
     let mut expander = Expander::new(source, Profile::CA65_2_19_6502).expect("short text parses");
-    let mut host = TestHost::default();
+    let mut host = TestHost::with_files(files);
     while let Some(line) = expander.next_line(&mut host) {
         host.assemble(&line);
     }

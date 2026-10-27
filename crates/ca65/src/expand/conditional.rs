@@ -7,7 +7,7 @@
 //! runs only the first branch, and two `.elseif`s after `.if 0` run the first
 //! that is true.
 
-use lang198x_syntax::Span;
+use lang198x_syntax::{Span, TextId};
 
 /// One open conditional.
 #[derive(Debug, Clone, Copy)]
@@ -41,6 +41,18 @@ pub(super) struct Conditionals {
 }
 
 impl Conditionals {
+    /// Closes the innermost levels opened in `text`, as ca65 does as it
+    /// leaves a file, and returns where each was opened. It stops at the
+    /// first level opened elsewhere.
+    pub(super) fn close_opened_in(&mut self, text: TextId) -> Vec<Span> {
+        let mut sites = Vec::new();
+        while let Some(level) = self.levels.last().filter(|l| l.site.text() == text) {
+            sites.push(level.site);
+            self.levels.pop();
+        }
+        sites
+    }
+
     /// Whether lines are being run: every open level is taken.
     pub(super) fn active(&self) -> bool {
         self.levels.last().is_none_or(|l| l.cond && l.parent)
