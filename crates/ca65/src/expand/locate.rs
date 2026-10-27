@@ -56,7 +56,7 @@ impl Expander {
     ///     }
     /// }
     ///
-    /// let source = ".macro m\n  nop\n.endmacro\n\nm\n";
+    /// let source = ".macro m\n  nop\n.endmacro\nm\n";
     /// let mut expander = Expander::new(source, Profile::CA65_2_19_6502)?;
     /// let line = expander.next_line(&mut Nothing).expect("the macro's line");
     /// let at = expander.locate(line.span()).expect("a place");
