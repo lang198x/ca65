@@ -79,6 +79,28 @@ const MEASURED: &[(&str, Want)] = &[
         Refused("not a control command"),
     ),
     (".if 1\n.byte 1\n", Refused("never closed")),
+    // A label on a conditional's line is defined when the line is read
+    // while lines run, whatever the conditional then does.
+    (
+        ".byte 7\ntail: .if 1\n.byte 8\n.endif\n.word tail\n",
+        Bytes(&[7, 8, 1, 0]),
+    ),
+    (
+        ".byte 7\ntail: .if 0\n.byte 8\n.endif\n.word tail\n",
+        Bytes(&[7, 1, 0]),
+    ),
+    (
+        ".if 1\n.byte 8\ntail: .else\n.byte 9\n.endif\n.word tail\n",
+        Bytes(&[8, 1, 0]),
+    ),
+    (
+        ".if 0\n.byte 8\ntail: .endif\n.word tail\n",
+        Refused("`tail` is not defined"),
+    ),
+    (
+        ".if 0\n.byte 8\ntail: .else\n.byte 9\n.endif\n.word tail\n",
+        Refused("`tail` is not defined"),
+    ),
     (".else\n", Refused("`.else` with no `.if` open")),
     (".endif\n", Refused("`.endif` with no `.if` open")),
     (".if 1\n.else\n.else\n.endif\n", Refused("a second `.else`")),
