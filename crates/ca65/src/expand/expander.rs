@@ -1001,9 +1001,13 @@ impl Expander {
         if !functions::any(&pieces) {
             return Some((line, problems, text));
         }
-        let result = functions::run(pieces, &mut |pieces, site| {
-            self.constant(pieces, site, host)
-        });
+        let result = functions::run(
+            pieces,
+            &mut Asked {
+                expander: self,
+                host,
+            },
+        );
         let pieces = match result {
             Ok(pieces) => pieces,
             Err(problem) => {
@@ -1417,5 +1421,25 @@ impl Expander {
     fn report_kind(&mut self, kind: DiagnosticKind, site: Span, message: &str) {
         self.diagnostics
             .push((site.text(), Diagnostic::new(kind, site.range(), message)));
+    }
+}
+
+/// The expander and its host, answering a line's token functions.
+struct Asked<'a> {
+    expander: &'a mut Expander,
+    host: &'a mut dyn Host,
+}
+
+impl functions::Answers for Asked<'_> {
+    fn value(&mut self, pieces: &[Piece], site: Span) -> Result<i64, Problem> {
+        self.expander.constant(pieces, site, self.host)
+    }
+
+    fn is_macro(&self, name: &str) -> bool {
+        self.expander.macros.contains_key(name)
+    }
+
+    fn is_mnemonic(&self, name: &str) -> bool {
+        self.expander.mode.cpu().is_mnemonic(name)
     }
 }

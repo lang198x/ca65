@@ -449,8 +449,8 @@ fn functions() {
         "(LINE (ASSIGNMENT (NAME v) = (CALL_EXPR .blank ( (ARG (TOKEN_LIST ( a , b ))) ))))"
     );
     assert_eq!(
-        line("v = .tcount({{1}})"),
-        "(LINE (ASSIGNMENT (NAME v) = (CALL_EXPR .tcount ( (ARG (TOKEN_LIST { { 1 } })) ))))"
+        line("v = .tcount({{1})"),
+        "(LINE (ASSIGNMENT (NAME v) = (CALL_EXPR .tcount ( (ARG (TOKEN_LIST { { 1 })) ))))"
     );
 }
 

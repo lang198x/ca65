@@ -9,8 +9,9 @@ use crate::ast::{CallExpr, Expr, View};
 use crate::kinds;
 
 /// Lowers `expr` to an IR expression with the value ca65 gives it. Names stay
-/// names, as written. `known` answers what ca65 needs now: the size of a
-/// name in `.sizeof`.
+/// names, as written, and each one is [read](Known::read). `known` answers
+/// what ca65 needs now: the size of a name in `.sizeof`, and what `.defined`,
+/// `.referenced` and `.const` ask.
 ///
 /// ```
 /// use lang198x_ca65::ast::{SourceFile, Statement, View};
@@ -54,7 +55,11 @@ fn lower(expr: &Expr, known: &dyn Known) -> Result<Ir, Diagnostic> {
             let token = literal.token().ok_or_else(missing)?;
             literal_value(&token)?
         }
-        Expr::Name(name) => Ir::Sym(name.text()),
+        Expr::Name(name) => {
+            let name = name.text();
+            known.read(&name);
+            Ir::Sym(name)
+        }
         Expr::Unnamed(unnamed) => Ir::Sym(
             unnamed
                 .token()
@@ -114,16 +119,33 @@ fn lower(expr: &Expr, known: &dyn Known) -> Result<Ir, Diagnostic> {
     })
 }
 
-/// A function: those that only compute a value, and `.sizeof`, which ca65
-/// needs to know now. Those that ask other things about the program, such as
-/// `.defined`, are not lowered yet.
+/// A function: those that only compute a value, and those that ask about
+/// the program now: `.sizeof`, `.defined`, `.referenced` and `.const`. The
+/// expander has already replaced the functions of tokens, such as `.strlen`.
 fn function(call: &CallExpr, range: TextRange, known: &dyn Known) -> Result<Ir, Diagnostic> {
     let name = call
         .function()
         .map(|t| t.text().to_ascii_lowercase())
         .unwrap_or_default();
-    if name == ".sizeof" {
-        return size_of(call, range, known);
+    match name.as_str() {
+        ".sizeof" => return size_of(call, range, known),
+        ".defined" | ".def" => {
+            let name = named(call, range, "`.defined`")?;
+            return Ok(Ir::Num(i64::from(known.is_defined(&name))));
+        }
+        ".referenced" | ".ref" => {
+            let name = named(call, range, "`.referenced`")?;
+            return Ok(Ir::Num(i64::from(known.is_referenced(&name))));
+        }
+        ".const" => {
+            let mut args = call.args();
+            let value = match (args.next().and_then(|arg| arg.expr()), args.next()) {
+                (Some(value), None) => lower(&value, known)?,
+                _ => return Err(invalid(range, "`.const` takes one value")),
+            };
+            return Ok(Ir::Num(i64::from(constant(&value, known).is_some())));
+        }
+        _ => {}
     }
     const LOWERED: &[&str] = &[
         ".lobyte",
@@ -176,14 +198,19 @@ fn function(call: &CallExpr, range: TextRange, known: &dyn Known) -> Result<Ir, 
     })
 }
 
+/// The one name `call` takes, for `what`. It is not read.
+fn named(call: &CallExpr, range: TextRange, what: &str) -> Result<String, Diagnostic> {
+    let mut args = call.args();
+    match (args.next().and_then(|arg| arg.expr()), args.next()) {
+        (Some(Expr::Name(name)), None) => Ok(name.text()),
+        _ => Err(invalid(range, &format!("{what} takes a name"))),
+    }
+}
+
 /// `.sizeof(name)`: the bytes a label's line made, or a scope's bytes. ca65
 /// needs the size now, so a name further on has none.
 fn size_of(call: &CallExpr, range: TextRange, known: &dyn Known) -> Result<Ir, Diagnostic> {
-    let mut args = call.args();
-    let name = match (args.next().and_then(|arg| arg.expr()), args.next()) {
-        (Some(Expr::Name(name)), None) => name.text(),
-        _ => return Err(invalid(range, "`.sizeof` takes a name")),
-    };
+    let name = named(call, range, "`.sizeof`")?;
     known
         .size_of(&name)
         .map(Ir::Num)
@@ -195,7 +222,7 @@ fn literal_value(token: &SyntaxToken) -> Result<Ir, Diagnostic> {
     let text = token.text();
     let range = token.text_range();
     match token.kind() {
-        kinds::NUMBER => number(text)
+        kinds::NUMBER => crate::number::value(text)
             .map(Ir::Num)
             .ok_or_else(|| invalid(range, "this number is too large")),
         kinds::CHAR => {
@@ -210,23 +237,6 @@ fn literal_value(token: &SyntaxToken) -> Result<Ir, Diagnostic> {
         kinds::STAR => Ok(Ir::Pc),
         _ => Err(invalid(range, "a string is not a value here")),
     }
-}
-
-/// The value of a number as ca65 writes it: `$hex`, `%binary`, decimal, or
-/// hex ending in `h`. ca65 keeps 32 bits.
-fn number(text: &str) -> Option<i64> {
-    let (digits, radix) = if let Some(hex) = text.strip_prefix('$') {
-        (hex, 16)
-    } else if let Some(binary) = text.strip_prefix('%') {
-        (binary, 2)
-    } else if let Some(hex) = text.strip_suffix(['h', 'H']) {
-        (hex, 16)
-    } else {
-        (text, 10)
-    };
-    i64::from_str_radix(digits, radix)
-        .ok()
-        .filter(|v| *v <= i64::from(u32::MAX))
 }
 
 /// The address size ca65 gives `expr`. A value known now takes the size its

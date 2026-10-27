@@ -74,6 +74,29 @@ pub trait Known {
         let _ = name;
         None
     }
+
+    /// Whether `name`, as written, is defined so far, for `.defined`. The
+    /// default is no.
+    fn is_defined(&self, name: &str) -> bool {
+        let _ = name;
+        false
+    }
+
+    /// Whether `name`, as written, has been used so far, for `.referenced`.
+    /// The default is no.
+    fn is_referenced(&self, name: &str) -> bool {
+        let _ = name;
+        false
+    }
+
+    /// Told of each name lowering reads as a value, in the order ca65 reads
+    /// them, which ca65 counts as a use. A name in `.defined`,
+    /// `.referenced` or `.sizeof` is not read, but one in `.const` is. So
+    /// `.byte .ref(v), v, .ref(v)` gives 0 and then 1, if the assembler
+    /// counts the use at once. The default does nothing.
+    fn read(&self, name: &str) {
+        let _ = name;
+    }
 }
 
 /// What is known of `expr` now: its value if every name in it is a

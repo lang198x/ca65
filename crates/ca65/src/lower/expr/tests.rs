@@ -96,7 +96,8 @@ fn names_stay_as_written() {
 #[test]
 fn what_is_not_lowered_yet_says_so() {
     for (text, kind) in [
-        (".defined(q)", DiagnosticKind::Unsupported),
+        (".cpu", DiagnosticKind::Unsupported),
+        (".defined(1)", DiagnosticKind::Invalid),
         (".strlen(\"ab\")", DiagnosticKind::Unsupported),
         ("\"A\"", DiagnosticKind::Invalid),
         (".lobyte(1, 2)", DiagnosticKind::Invalid),
