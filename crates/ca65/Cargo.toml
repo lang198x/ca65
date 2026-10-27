@@ -11,6 +11,16 @@ categories = ["parsing"]
 
 [dependencies]
 lang198x-syntax = "0.1.3"
+# A range, as in lang198x-z80-asm: Asm198x patches this to its own workspace
+# copy, so its releases must still match. CI resolves the newest.
+asm198x-ir = { version = ">=0.0.72, <0.1", optional = true }
+# The instruction forms lowering chooses from; asm198x-ir names its types.
+isa198x = { version = "0.1.7", optional = true }
+
+[features]
+# Lowering to asm198x-ir, for the Asm198x back end. Off by default, so tools
+# that need only the tree build without any Asm198x crate.
+ir = ["dep:asm198x-ir", "dep:isa198x"]
 
 
 [dev-dependencies]
