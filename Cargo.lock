@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "asm198x-ir"
+version = "0.0.72"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "990db0e4c855582f682361a9f8973cdc24bab9c51be996a74b01dff10c70e1db"
+dependencies = [
+ "isa198x",
+ "serde",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -158,9 +168,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "isa198x"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fd199905f9c1a1b9e73958648740d63597dad82ed291123ac995a9c6f30cabe"
+
+[[package]]
 name = "lang198x-ca65"
 version = "0.0.2"
 dependencies = [
+ "asm198x-ir",
+ "isa198x",
  "lang198x-syntax",
  "proptest",
 ]
