@@ -239,33 +239,148 @@ fn literal_value(token: &SyntaxToken) -> Result<Ir, Diagnostic> {
     }
 }
 
-/// The address size ca65 gives `expr`. A value known now takes the size its
-/// value needs. Otherwise each name takes its own size, an unknown name
-/// absolute, and `<`, `>` and `^` make one byte.
+/// The address size ca65 gives `expr`. A value whose names are all
+/// constants takes the size its value needs. Otherwise each name takes its
+/// own size, an unknown name absolute, and `<`, `>` and `^` make one byte.
+/// So `r - l` is absolute, though its value is known.
 pub(super) fn size(expr: &Ir, known: &dyn Known) -> Size {
-    match constant(expr, known) {
+    match plain(expr, known) {
         Some(value) => Size::of(value),
         None => structural(expr, known).unwrap_or(Size::Absolute),
     }
 }
 
-/// The value of `expr` if it is known now: every name in it a constant.
+/// The value of `expr` if it is known now. Every name in it is a constant,
+/// or the labels in it cancel out, as in `r - l` for two labels in one
+/// segment.
 pub(super) fn constant(expr: &Ir, known: &dyn Known) -> Option<i64> {
+    linear(expr, known)
+        .filter(|sum| sum.terms.is_empty())
+        .map(|sum| sum.value)
+}
+
+/// The value of `expr` if every name in it is a constant.
+pub(super) fn plain(expr: &Ir, known: &dyn Known) -> Option<i64> {
     let value = |name: &str| match known.name(name) {
         Value::Constant(value) => Some(value),
-        Value::Address(_) | Value::Unknown => None,
+        _ => None,
     };
     let pc = match known.pc() {
         Value::Constant(value) => Some(value),
-        Value::Address(_) | Value::Unknown => None,
+        _ => None,
     };
     expr.eval_with(&value, pc, 0).ok()
+}
+
+/// A value as ca65 keeps it while it reads: a number plus a sum of labels,
+/// each counted some number of times, by segment.
+#[derive(Debug, Default)]
+pub(super) struct Sum {
+    /// The number, with each label's offset into its segment counted in.
+    pub(super) value: i64,
+    /// How many times each segment's start is counted, for those that do
+    /// not cancel out.
+    pub(super) terms: Vec<(u32, i64)>,
+}
+
+impl Sum {
+    fn number(value: i64) -> Self {
+        Self {
+            value,
+            terms: Vec::new(),
+        }
+    }
+
+    fn known(&self) -> Option<i64> {
+        self.terms.is_empty().then_some(self.value)
+    }
+
+    fn add(mut self, other: Self, sign: i64) -> Option<Self> {
+        self.value = self.value.checked_add(other.value.checked_mul(sign)?)?;
+        for (segment, count) in other.terms {
+            match self.terms.iter_mut().find(|(s, _)| *s == segment) {
+                Some((_, mine)) => *mine = mine.checked_add(count.checked_mul(sign)?)?,
+                None => self.terms.push((segment, count.checked_mul(sign)?)),
+            }
+        }
+        self.terms.retain(|&(_, count)| count != 0);
+        Some(self)
+    }
+
+    fn scale(mut self, by: i64) -> Option<Self> {
+        self.value = self.value.checked_mul(by)?;
+        for (_, count) in &mut self.terms {
+            *count = count.checked_mul(by)?;
+        }
+        self.terms.retain(|&(_, count)| count != 0);
+        Some(self)
+    }
+}
+
+/// `expr` as a [`Sum`], if it is one. Labels may be added, taken away,
+/// negated and multiplied by a known number, as ca65 allows. Any other
+/// operation needs a known value on each side.
+pub(super) fn linear(expr: &Ir, known: &dyn Known) -> Option<Sum> {
+    let of = |value: Value| match value {
+        Value::Constant(value) | Value::Measured { value, .. } => Some(Sum::number(value)),
+        Value::Placed {
+            segment, offset, ..
+        } => Some(Sum {
+            value: offset,
+            terms: vec![(segment, 1)],
+        }),
+        Value::Address(_) | Value::Unknown => None,
+    };
+    match expr {
+        Ir::Num(value) => Some(Sum::number(*value)),
+        Ir::Sym(name) => of(known.name(name)),
+        Ir::Pc => of(known.pc()),
+        Ir::Neg(inner) => linear(inner, known)?.scale(-1),
+        Ir::Bin(BinOp::Add, lhs, rhs) => linear(lhs, known)?.add(linear(rhs, known)?, 1),
+        Ir::Bin(BinOp::Sub, lhs, rhs) => linear(lhs, known)?.add(linear(rhs, known)?, -1),
+        Ir::Bin(BinOp::Mul, lhs, rhs) => {
+            let (lhs, rhs) = (linear(lhs, known)?, linear(rhs, known)?);
+            match (lhs.known(), rhs.known()) {
+                (_, Some(by)) => lhs.scale(by),
+                (Some(by), None) => rhs.scale(by),
+                (None, None) => None,
+            }
+        }
+        // Each side that is known becomes its number, and the rest is left
+        // to the evaluator, so `&&` and `||` stay lazy.
+        other => {
+            let folded = map_children(other, &mut |child| match linear(child, known) {
+                Some(sum) if sum.terms.is_empty() => Ir::Num(sum.value),
+                _ => child.clone(),
+            });
+            plain(&folded, known).map(Sum::number)
+        }
+    }
+}
+
+/// `expr` with each of its direct parts replaced by `map`.
+fn map_children(expr: &Ir, map: &mut dyn FnMut(&Ir) -> Ir) -> Ir {
+    let boxed = |inner: &Ir, map: &mut dyn FnMut(&Ir) -> Ir| Box::new(map(inner));
+    match expr {
+        Ir::Num(_) | Ir::Sym(_) | Ir::Pc => expr.clone(),
+        Ir::Lo(inner) => Ir::Lo(boxed(inner, map)),
+        Ir::Hi(inner) => Ir::Hi(boxed(inner, map)),
+        Ir::Bank(inner) => Ir::Bank(boxed(inner, map)),
+        Ir::Neg(inner) => Ir::Neg(boxed(inner, map)),
+        Ir::BitNot(inner) => Ir::BitNot(boxed(inner, map)),
+        Ir::FixRound(inner) => Ir::FixRound(boxed(inner, map)),
+        Ir::TrailingZeros(inner) => Ir::TrailingZeros(boxed(inner, map)),
+        Ir::LogNot(inner) => Ir::LogNot(boxed(inner, map)),
+        Ir::Bin(op, lhs, rhs) => Ir::Bin(*op, boxed(lhs, map), boxed(rhs, map)),
+    }
 }
 
 fn structural(expr: &Ir, known: &dyn Known) -> Option<Size> {
     let of = |value: Value| match value {
         Value::Constant(value) => Some(Size::of(value)),
-        Value::Address(size) => Some(size),
+        Value::Address(size) | Value::Placed { size, .. } | Value::Measured { size, .. } => {
+            Some(size)
+        }
         Value::Unknown => Some(Size::Absolute),
     };
     match expr {

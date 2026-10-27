@@ -54,9 +54,30 @@ impl Size {
 pub enum Value {
     /// A constant, such as `q = $12`, or a label under `.org`.
     Constant(i64),
-    /// An address whose value the linker gives, such as a label in a
-    /// segment, with the segment's address size.
+    /// An address whose value the linker gives, such as an import, with
+    /// its address size.
     Address(Size),
+    /// A label the linker places, `offset` bytes into the segment the
+    /// assembler numbers `segment`, which has address size `size`. Two of
+    /// these in one segment are a known distance apart, so `r - l` is a
+    /// constant once both are defined.
+    Placed {
+        /// The segment, numbered however the assembler likes.
+        segment: u32,
+        /// How far into the segment the label is.
+        offset: i64,
+        /// The segment's address size.
+        size: Size,
+    },
+    /// A constant made from labels the linker places, such as `r - l` for
+    /// two labels in one segment. ca65 knows its value but gives it the
+    /// labels' address size, so `lda r - l` is absolute.
+    Measured {
+        /// The value.
+        value: i64,
+        /// The address size of the labels it came from.
+        size: Size,
+    },
     /// Nothing yet: a name defined further on. ca65 takes it as absolute.
     Unknown,
 }
@@ -101,16 +122,29 @@ pub trait Known {
     }
 }
 
-/// What is known of `expr` now: its value if every name in it is a
-/// constant, and otherwise the address size ca65 gives it. Each name takes
-/// its own size, a name not known yet is absolute, and `<`, `>` and `^`
-/// make one byte.
+/// What is known of `expr` now. Its value if every name in it is a
+/// constant. If it is made from labels in one segment, such as `r - l` or
+/// `l + 1`, what [`Value::Measured`] or [`Value::Placed`] says. Otherwise
+/// the address size ca65 gives it: each name takes its own size, a name not
+/// known yet is absolute, and `<`, `>` and `^` make one byte.
 ///
 /// An assembler can use this for the value of `name = expr`.
 #[must_use]
 pub fn value(expr: &asm198x_ir::Expr, known: &dyn Known) -> Value {
-    match expr::constant(expr, known) {
-        Some(value) => Value::Constant(value),
-        None => Value::Address(expr::size(expr, known)),
+    if let Some(value) = expr::plain(expr, known) {
+        return Value::Constant(value);
+    }
+    let size = expr::size(expr, known);
+    match expr::linear(expr, known) {
+        Some(sum) if sum.terms.is_empty() => Value::Measured {
+            value: sum.value,
+            size,
+        },
+        Some(sum) if matches!(sum.terms.as_slice(), [(_, 1)]) => Value::Placed {
+            segment: sum.terms[0].0,
+            offset: sum.value,
+            size,
+        },
+        _ => Value::Address(size),
     }
 }
