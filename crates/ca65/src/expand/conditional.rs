@@ -7,7 +7,7 @@
 //! runs only the first branch, and two `.elseif`s after `.if 0` run the first
 //! that is true.
 
-use lang198x_syntax::TextRange;
+use lang198x_syntax::Span;
 
 /// One open conditional.
 #[derive(Debug, Clone, Copy)]
@@ -22,7 +22,7 @@ struct Level {
     /// Whether an `.endif` closes this level, rather than the one below it.
     needs_end: bool,
     /// The command that opened the level.
-    site: TextRange,
+    site: Span,
 }
 
 /// Why a conditional command did not fit the stack.
@@ -48,17 +48,17 @@ impl Conditionals {
 
     /// Opens a level, `.if` or one of its kin, at `site`. Its branch runs if
     /// `cond` holds and the lines around it run.
-    pub(super) fn open(&mut self, site: TextRange, cond: bool) {
+    pub(super) fn open(&mut self, site: Span, cond: bool) {
         self.push(site, cond, true);
     }
 
     /// Opens the level a `.elseif` makes, after [`otherwise`](Self::otherwise),
     /// which the chain's `.endif` closes.
-    pub(super) fn open_chained(&mut self, site: TextRange, cond: bool) {
+    pub(super) fn open_chained(&mut self, site: Span, cond: bool) {
         self.push(site, cond, false);
     }
 
-    fn push(&mut self, site: TextRange, cond: bool, needs_end: bool) {
+    fn push(&mut self, site: Span, cond: bool, needs_end: bool) {
         let parent = self.active();
         self.levels.push(Level {
             cond,
@@ -81,6 +81,17 @@ impl Conditionals {
         Ok(())
     }
 
+    /// How many levels are open.
+    pub(super) fn depth(&self) -> usize {
+        self.levels.len()
+    }
+
+    /// Closes the levels opened after the first `depth`, as `.exitmacro`
+    /// does for those its macro opened.
+    pub(super) fn truncate(&mut self, depth: usize) {
+        self.levels.truncate(depth);
+    }
+
     /// `.endif`: closes the innermost chain.
     pub(super) fn end(&mut self) -> Result<(), Misfit> {
         loop {
@@ -93,7 +104,7 @@ impl Conditionals {
 
     /// Closes every level still open, returning where each `.if` chain left
     /// unclosed was opened, outermost first.
-    pub(super) fn close_all(&mut self) -> Vec<TextRange> {
+    pub(super) fn close_all(&mut self) -> Vec<Span> {
         let sites = self
             .levels
             .iter()
@@ -107,12 +118,15 @@ impl Conditionals {
 
 #[cfg(test)]
 mod tests {
-    use lang198x_syntax::TextSize;
+    use lang198x_syntax::{FileId, TextId, TextRange, TextSize};
 
     use super::*;
 
-    fn at(offset: u32) -> TextRange {
-        TextRange::empty(TextSize::new(offset))
+    fn at(offset: u32) -> Span {
+        Span::new(
+            TextId::File(FileId::new(0)),
+            TextRange::empty(TextSize::new(offset)),
+        )
     }
 
     #[test]
@@ -155,6 +169,9 @@ mod tests {
         assert_eq!(stack.otherwise(), Err(Misfit::DuplicateElse));
         stack.open(at(5), true);
         stack.open_chained(at(7), true);
+        assert_eq!(stack.depth(), 3);
+        stack.truncate(2);
+        assert_eq!(stack.depth(), 2);
         assert_eq!(stack.close_all(), [at(3), at(5)]);
     }
 }

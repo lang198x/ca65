@@ -1,28 +1,37 @@
-//! Running a program's lines and its conditionals.
+//! Running a program's lines: conditionals, macros and `.end`.
 //!
-//! The expander follows ca65 V2.19's own model (`OneLine` in `main.c`, and
-//! `DoConditionals` and `CheckConditionals` in `condasm.c`). It reads the
-//! program's lines in order and keeps the stack of open conditionals.
+//! The expander follows ca65 V2.19's own model (`OneLine` in `main.c`,
+//! `DoConditionals` in `condasm.c`, and `macro.c`). It reads lines from a
+//! stack of sources: the program's file at the bottom, and above it the text
+//! of each macro call being run. It keeps the stack of open conditionals.
 //!
 //! While lines run, a conditional command at the start of a statement opens,
-//! turns or closes a level, asking the host for its condition. A line that is
-//! not a conditional, and is not `.end`, goes to the host.
+//! turns or closes a level, asking the host for its condition. `.macro`
+//! defines a macro from the lines up to `.endmacro`, and a call runs its text
+//! as a new source. Any other line goes to the host.
 //!
 //! While lines do not run, ca65 skips them token by token, looking only for
 //! conditional commands, wherever they are on a line. So `.byte 1 .endif`
 //! ends a skipped branch, and anything after the `.endif` on its line is
-//! refused. A skipped branch's conditions are never asked for.
+//! refused. A skipped branch's conditions are never asked for, and a macro
+//! defined there is not defined.
 //!
-//! The lexer's problems count on every line, skipped or not, as ca65's
-//! scanner reads every token. Syntax problems count only on lines that run.
+//! The lexer's problems in a file count on every line, skipped or not, as
+//! ca65's scanner reads every token. Syntax problems count only on lines
+//! that run. A conditional opened in a macro stays open after the macro
+//! ends, as in ca65, unless `.exitmacro` leaves it.
+
+use std::collections::HashMap;
 
 use lang198x_syntax::{
-    Diagnostic, DiagnosticKind, FileId, Parse, Span, SyntaxElement, SyntaxToken, TextId, TextRange,
+    Diagnostic, DiagnosticKind, ExpansionBuilder, FileId, Origin, Provenance, Span, SyntaxElement,
+    SyntaxKind, SyntaxToken, TextId, TextRange,
 };
 
 use super::conditional::{Conditionals, Misfit};
-use crate::ast::{Command, Expr, Line, NameRef, SourceFile, Statement, View};
-use crate::{Cpu, Mode, ParseError, Profile, kinds, lex, parse};
+use super::macros::{self, Macro};
+use crate::ast::{Command, Expr, Line, MacroCall, NameRef, SourceFile, Statement, View};
+use crate::{Context, Cpu, Mode, ParseError, Profile, kinds, lex, parse_with};
 
 /// Bounds on how much work expansion may do, so a program that never ends
 /// stops with a diagnostic instead.
@@ -30,20 +39,29 @@ use crate::{Cpu, Mode, ParseError, Profile, kinds, lex, parse};
 /// ```
 /// use lang198x_ca65::expand::Limits;
 ///
-/// let mut limits = Limits::default();
-/// limits.lines = 1000;
-/// assert_eq!(Limits::default().lines, 10_000_000);
+/// let limits = Limits::default();
+/// assert_eq!(limits.lines, 10_000_000);
+/// assert_eq!(limits.macro_depth, 256);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Limits {
     /// How many lines may be read in all, run or skipped.
     pub lines: usize,
+    /// How deeply macro calls may nest. ca65 V2.19 allows 256.
+    pub macro_depth: usize,
+    /// How many bytes of macro text may be made in all. A macro that passes
+    /// its argument on to itself makes text that grows at every level.
+    pub expanded_bytes: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { lines: 10_000_000 }
+        Self {
+            lines: 10_000_000,
+            macro_depth: 256,
+            expanded_bytes: 64 * 1024 * 1024,
+        }
     }
 }
 
@@ -76,6 +94,7 @@ pub trait Host {
 pub struct ActiveLine {
     line: Line,
     text: TextId,
+    label_only: bool,
 }
 
 impl ActiveLine {
@@ -85,7 +104,8 @@ impl ActiveLine {
         &self.line
     }
 
-    /// Returns the text the line is in.
+    /// Returns the text the line is in: the program's file, or the text of
+    /// a macro call. [`Expander::provenance`] traces it back.
     #[must_use]
     pub fn text(&self) -> TextId {
         self.text
@@ -95,6 +115,35 @@ impl ActiveLine {
     #[must_use]
     pub fn span(&self) -> Span {
         Span::new(self.text, self.line.syntax().text_range())
+    }
+
+    /// Returns whether only the line's labels are for the host: the rest is
+    /// a macro call that the expander runs next.
+    #[must_use]
+    pub fn label_only(&self) -> bool {
+        self.label_only
+    }
+}
+
+/// A text being read: the program's file, or a macro call's text.
+#[derive(Debug)]
+struct Source {
+    text: TextId,
+    lines: Vec<Line>,
+    /// The syntax problems on each line, reported only if it runs.
+    line_problems: Vec<Vec<Diagnostic>>,
+    next: usize,
+    /// For a macro call, how many conditionals were open when it started,
+    /// for `.exitmacro`.
+    call_depth: Option<usize>,
+}
+
+/// The macros defined so far, for the parser's questions.
+struct Defined<'m>(&'m HashMap<String, Macro>);
+
+impl Context for Defined<'_> {
+    fn is_macro(&mut self, name: &str) -> Option<bool> {
+        Some(self.0.contains_key(name))
     }
 }
 
@@ -122,23 +171,28 @@ impl ActiveLine {
 ///     }
 /// }
 ///
-/// let mut expander = Expander::new(".if 0\n nop\n.else\n rts\n.endif\n", Profile::CA65_2_19_6502)?;
-/// let line = expander.next_line(&mut Nothing).expect("one line runs");
-/// assert_eq!(line.line().syntax().text().trim(), "rts");
-/// assert!(expander.next_line(&mut Nothing).is_none());
+/// let source = ".macro twice op\n op\n op\n.endmacro\n.if 0\n nop\n.else\n twice rts\n.endif\n";
+/// let mut expander = Expander::new(source, Profile::CA65_2_19_6502)?;
+/// let mut lines = Vec::new();
+/// while let Some(line) = expander.next_line(&mut Nothing) {
+///     lines.push(line.line().syntax().text().trim().to_owned());
+/// }
+/// assert_eq!(lines, ["rts", "rts"]);
 /// assert!(expander.diagnostics().is_empty());
 /// # Ok::<(), lang198x_ca65::ParseError>(())
 /// ```
 #[derive(Debug)]
 pub struct Expander {
+    profile: Profile,
     mode: Mode,
     limits: Limits,
-    text: TextId,
-    lines: Vec<Line>,
-    /// The syntax problems on each line, reported only if it runs.
-    line_problems: Vec<Vec<Diagnostic>>,
-    next: usize,
+    provenance: Provenance,
+    sources: Vec<Source>,
+    macros: HashMap<String, Macro>,
+    /// The number of the next `.local` name.
+    next_local: usize,
     lines_read: usize,
+    expanded_bytes: usize,
     conditionals: Conditionals,
     ended: bool,
     finished: bool,
@@ -195,54 +249,36 @@ impl Expander {
     ///
     /// As for [`new`](Self::new).
     pub fn with_limits(text: &str, profile: Profile, limits: Limits) -> Result<Self, ParseError> {
-        let mode = Mode::of(profile);
-        let parse: Parse = parse(text, profile)?;
-        let lines: Vec<Line> = SourceFile::cast(parse.tree().root())
-            .map(|file| file.lines().collect())
-            .unwrap_or_default();
-        let id = TextId::File(FileId::new(0));
-        let lexical = lex(text, mode);
-        let mut diagnostics = Vec::new();
-        let mut line_problems = vec![Vec::new(); lines.len()];
-        for diagnostic in parse.diagnostics() {
-            if lexical.diagnostics().contains(diagnostic) {
-                diagnostics.push((id, diagnostic.clone()));
-            } else {
-                let start = diagnostic.range().start();
-                let index = lines
-                    .partition_point(|line| line.syntax().text_range().end() <= start)
-                    .min(lines.len().saturating_sub(1));
-                if let Some(problems) = line_problems.get_mut(index) {
-                    problems.push(diagnostic.clone());
-                }
-            }
-        }
-        Ok(Self {
-            mode,
+        let mut expander = Self {
+            profile,
+            mode: Mode::of(profile),
             limits,
-            text: id,
-            lines,
-            line_problems,
-            next: 0,
+            provenance: Provenance::new(),
+            sources: Vec::new(),
+            macros: HashMap::new(),
+            next_local: 0,
             lines_read: 0,
+            expanded_bytes: 0,
             conditionals: Conditionals::default(),
             ended: false,
             finished: false,
-            diagnostics,
-        })
+            diagnostics: Vec::new(),
+        };
+        let source = expander.load(TextId::File(FileId::new(0)), text, None, true)?;
+        expander.sources.push(source);
+        Ok(expander)
     }
 
     /// Returns the next line to assemble, or `None` when the program is
     /// done. `host` answers the conditions met on the way.
     pub fn next_line(&mut self, host: &mut dyn Host) -> Option<ActiveLine> {
         while !self.ended {
-            let Some(line) = self.lines.get(self.next).cloned() else {
+            let Some((line, problems, text)) = self.read() else {
                 break;
             };
-            let index = self.next;
-            self.next += 1;
             if self.lines_read >= self.limits.lines {
                 self.report(
+                    text,
                     line.syntax().text_range(),
                     "the program reads too many lines",
                 );
@@ -251,31 +287,14 @@ impl Expander {
             }
             self.lines_read += 1;
             if !self.conditionals.active() {
-                self.skip(&line, index, host);
+                self.skip(&line, problems, text, host);
                 continue;
             }
-            for problem in self.line_problems.get(index).cloned().unwrap_or_default() {
-                self.diagnostics.push((self.text, problem));
+            for problem in problems {
+                self.diagnostics.push((text, problem));
             }
-            let command = match line.statement() {
-                Some(Statement::Command(command)) => Some(command),
-                _ => None,
-            };
-            let word = command
-                .as_ref()
-                .and_then(Command::word)
-                .map(|w| w.text().to_ascii_lowercase());
-            match (command, word.as_deref()) {
-                (Some(command), Some(word)) if is_conditional(word) => {
-                    self.conditional(&command, word, host);
-                }
-                (Some(_), Some(".end")) => self.ended = true,
-                _ => {
-                    return Some(ActiveLine {
-                        line,
-                        text: self.text,
-                    });
-                }
+            if let Some(active) = self.run(line, text, host) {
+                return Some(active);
             }
         }
         self.finish();
@@ -288,6 +307,73 @@ impl Expander {
         &self.diagnostics
     }
 
+    /// Returns where every macro call's text came from.
+    #[must_use]
+    pub fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+
+    /// Parses `text` as a source. A file's lexer problems are reported now,
+    /// for every line; a macro call's text is made of tokens already read,
+    /// so it has none of its own.
+    fn load(
+        &mut self,
+        id: TextId,
+        text: &str,
+        call_depth: Option<usize>,
+        lexical: bool,
+    ) -> Result<Source, ParseError> {
+        let parse = parse_with(text, self.profile, &mut Defined(&self.macros))?;
+        let lines: Vec<Line> = SourceFile::cast(parse.tree().root())
+            .map(|file| file.lines().collect())
+            .unwrap_or_default();
+        let lexed = lex(text, self.mode);
+        let mut line_problems = vec![Vec::new(); lines.len()];
+        for diagnostic in parse.diagnostics() {
+            if lexed.diagnostics().contains(diagnostic) {
+                if lexical {
+                    self.diagnostics.push((id, diagnostic.clone()));
+                }
+            } else {
+                let start = diagnostic.range().start();
+                let index = lines
+                    .partition_point(|line| line.syntax().text_range().end() <= start)
+                    .min(lines.len().saturating_sub(1));
+                if let Some(problems) = line_problems.get_mut(index) {
+                    problems.push(diagnostic.clone());
+                }
+            }
+        }
+        Ok(Source {
+            text: id,
+            lines,
+            line_problems,
+            next: 0,
+            call_depth,
+        })
+    }
+
+    /// The next line from the innermost source, and its syntax problems.
+    /// A source that has run out is left.
+    fn read(&mut self) -> Option<(Line, Vec<Diagnostic>, TextId)> {
+        loop {
+            let source = self.sources.last_mut()?;
+            if let Some(line) = source.lines.get(source.next).cloned() {
+                let problems = source
+                    .line_problems
+                    .get(source.next)
+                    .cloned()
+                    .unwrap_or_default();
+                source.next += 1;
+                return Some((line, problems, source.text));
+            }
+            if self.sources.len() == 1 {
+                return None;
+            }
+            self.sources.pop();
+        }
+    }
+
     /// Reports any conditional left open, once, when the program is done.
     fn finish(&mut self) {
         if self.finished {
@@ -295,13 +381,214 @@ impl Expander {
         }
         self.finished = true;
         for site in self.conditionals.close_all() {
-            self.report(site, "this conditional is never closed with `.endif`");
+            self.report(
+                site.text(),
+                site.range(),
+                "this conditional is never closed with `.endif`",
+            );
         }
     }
 
-    /// A conditional command at the start of a statement, while lines run.
-    fn conditional(&mut self, command: &Command, word: &str, host: &mut dyn Host) {
+    /// A line while lines run: the expander's own commands run here, and
+    /// anything else is the host's.
+    fn run(&mut self, line: Line, text: TextId, host: &mut dyn Host) -> Option<ActiveLine> {
+        let (line, text) = self.reparse_if_stale(&line, text).unwrap_or((line, text));
+        match line.statement() {
+            Some(Statement::Command(command)) => {
+                let word = command.word().map(|w| w.text().to_ascii_lowercase());
+                match word.as_deref() {
+                    Some(word) if is_conditional(word) => {
+                        self.conditional(&command, word, text, host);
+                        return None;
+                    }
+                    Some(".end") => {
+                        self.ended = true;
+                        return None;
+                    }
+                    Some(".macro" | ".mac") => {
+                        self.define(&command, text);
+                        return None;
+                    }
+                    Some(".delmac" | ".delmacro") => {
+                        if let Some(name) = command.name()
+                            && self.macros.remove(&name.text()).is_none()
+                        {
+                            let message = format!("no macro is named `{}`", name.text());
+                            self.report(text, name.syntax().text_range(), &message);
+                        }
+                        return None;
+                    }
+                    Some(".exitmac" | ".exitmacro") => {
+                        self.exit_macro(&command, text);
+                        return None;
+                    }
+                    _ => {}
+                }
+            }
+            Some(Statement::MacroCall(call)) => {
+                let name = call.name().map(|n| n.text().to_owned()).unwrap_or_default();
+                if self.macros.contains_key(&name) {
+                    let labelled = line.label().is_some() || line.unnamed_label().is_some();
+                    self.call(&call, &name, text);
+                    return labelled.then_some(ActiveLine {
+                        line,
+                        text,
+                        label_only: true,
+                    });
+                }
+            }
+            _ => {}
+        }
+        Some(ActiveLine {
+            line,
+            text,
+            label_only: false,
+        })
+    }
+
+    /// A line whose reading depends on macros defined since its text was
+    /// parsed is parsed again, on its own, with the macros actually
+    /// defined: one defined in a skipped branch is not, and one deleted is
+    /// gone.
+    fn reparse_if_stale(&mut self, line: &Line, text: TextId) -> Option<(Line, TextId)> {
+        let head = macros::head_name(line, |name| self.macros.contains_key(name))?;
+        let parsed_as_call = matches!(line.statement(), Some(Statement::MacroCall(_)));
+        let is_macro = self.macros.contains_key(&head);
+        if parsed_as_call == is_macro {
+            return None;
+        }
+        let mut builder = ExpansionBuilder::new();
+        builder.push(
+            line.syntax().text(),
+            Origin::Source {
+                from: Span::new(text, line.syntax().text_range()),
+            },
+        );
+        let (id, source) = self.add_text(builder, None)?;
+        let reparsed = source.lines.first().cloned()?;
+        for problem in source.line_problems.into_iter().flatten() {
+            self.diagnostics.push((id, problem));
+        }
+        Some((reparsed, id))
+    }
+
+    /// Adds an expansion's text to the provenance and parses it.
+    fn add_text(
+        &mut self,
+        builder: ExpansionBuilder,
+        call_depth: Option<usize>,
+    ) -> Option<(TextId, Source)> {
+        let expansion = builder.finish().ok()?;
+        let text = expansion.text().to_owned();
+        let id = TextId::Expansion(self.provenance.add(expansion).ok()?);
+        let source = self.load(id, &text, call_depth, false).ok()?;
+        Some((id, source))
+    }
+
+    /// `.macro name params`: the lines up to the first `.endmacro` that
+    /// starts a line are its body.
+    fn define(&mut self, command: &Command, text: TextId) {
+        let mut body = Vec::new();
+        let mut closed = false;
+        if let Some(source) = self.sources.last_mut() {
+            while let Some(line) = source.lines.get(source.next).cloned() {
+                source.next += 1;
+                let ends = matches!(
+                    macros::command_word(&line).as_deref(),
+                    Some(".endmacro" | ".endmac")
+                );
+                if ends {
+                    closed = true;
+                    break;
+                }
+                body.push(line);
+            }
+        }
         let site = command.syntax().text_range();
+        if !closed {
+            self.report(text, site, "this macro has no `.endmacro`");
+            return;
+        }
+        let Some(name) = command.name().map(|n| n.text()) else {
+            // The parser has reported the missing name.
+            return;
+        };
+        if self.macros.contains_key(&name) {
+            let message = format!("a macro named `{name}` is already defined");
+            self.report(text, site, &message);
+            return;
+        }
+        let params = command
+            .params()
+            .map(|p| p.names().map(|n| n.text().to_owned()).collect())
+            .unwrap_or_default();
+        self.macros.insert(name, Macro::new(params, body, text));
+    }
+
+    /// A call of a defined macro: its text becomes the next source.
+    fn call(&mut self, call: &MacroCall, name: &str, text: TextId) {
+        let site = call.syntax().text_range();
+        let depth = self
+            .sources
+            .iter()
+            .filter(|s| s.call_depth.is_some())
+            .count();
+        if depth >= self.limits.macro_depth {
+            let message = format!("too many nested macro calls, in `{name}`");
+            self.report(text, site, &message);
+            self.ended = true;
+            return;
+        }
+        let Some(definition) = self.macros.get(name).cloned() else {
+            return;
+        };
+        let given = call.args().count();
+        if given > definition.params.len() {
+            let message = format!(
+                "`{name}` takes {} arguments, and {given} are given",
+                definition.params.len()
+            );
+            self.report(text, site, &message);
+        }
+        let first_local = self.next_local;
+        self.next_local += definition.local_count();
+        let builder = definition.expand(call, text, first_local);
+        let Some((_, source)) = self.add_text(builder, Some(self.conditionals.depth())) else {
+            self.report(text, site, "this macro call's text could not be made");
+            return;
+        };
+        self.expanded_bytes += source
+            .lines
+            .last()
+            .map_or(0, |l| l.syntax().text_range().end().to_usize());
+        if self.expanded_bytes > self.limits.expanded_bytes {
+            self.report(text, site, "the program's macros make too much text");
+            self.ended = true;
+            return;
+        }
+        self.sources.push(source);
+    }
+
+    /// `.exitmacro`: leaves the innermost macro call, closing the
+    /// conditionals opened inside it.
+    fn exit_macro(&mut self, command: &Command, text: TextId) {
+        let Some(index) = self.sources.iter().rposition(|s| s.call_depth.is_some()) else {
+            self.report(
+                text,
+                command.syntax().text_range(),
+                "`.exitmacro` outside a macro",
+            );
+            return;
+        };
+        if let Some(depth) = self.sources[index].call_depth {
+            self.conditionals.truncate(depth);
+        }
+        self.sources.truncate(index);
+    }
+
+    /// A conditional command at the start of a statement, while lines run.
+    fn conditional(&mut self, command: &Command, word: &str, text: TextId, host: &mut dyn Host) {
+        let site = Span::new(text, command.syntax().text_range());
         match word {
             ".else" => {
                 let result = self.conditionals.otherwise();
@@ -321,18 +608,24 @@ impl Expander {
                 self.misfit(result, site, word);
             }
             _ => {
-                let cond = self.condition(command, word, host);
+                let cond = self.condition(command, word, text, host);
                 self.conditionals.open(site, cond);
             }
         }
     }
 
     /// The condition of an `.if` or one of its kin.
-    fn condition(&mut self, command: &Command, word: &str, host: &mut dyn Host) -> bool {
+    fn condition(
+        &mut self,
+        command: &Command,
+        word: &str,
+        text: TextId,
+        host: &mut dyn Host,
+    ) -> bool {
         let value = command.values().next();
         let name = command.name_ref();
         match word {
-            ".if" | ".elseif" => value.is_some_and(|expr| self.evaluate(&expr, host)),
+            ".if" | ".elseif" => value.is_some_and(|expr| self.evaluate(&expr, text, host)),
             ".ifconst" => value.is_some_and(|expr| host.is_constant(&expr)),
             ".ifnconst" => value.is_some_and(|expr| !host.is_constant(&expr)),
             ".ifdef" => name.is_some_and(|n| host.is_defined(&n)),
@@ -350,11 +643,11 @@ impl Expander {
 
     /// Evaluates a condition, reporting the host's problem at the
     /// expression and taking the condition as false.
-    fn evaluate(&mut self, expr: &Expr, host: &mut dyn Host) -> bool {
+    fn evaluate(&mut self, expr: &Expr, text: TextId, host: &mut dyn Host) -> bool {
         match host.evaluate(expr) {
             Ok(value) => value != 0,
             Err(message) => {
-                self.report(expr.syntax().text_range(), &message);
+                self.report(text, expr.syntax().text_range(), &message);
                 false
             }
         }
@@ -362,7 +655,7 @@ impl Expander {
 
     /// A line while lines do not run: only its conditional commands count,
     /// wherever they are.
-    fn skip(&mut self, line: &Line, index: usize, host: &mut dyn Host) {
+    fn skip(&mut self, line: &Line, problems: Vec<Diagnostic>, text: TextId, host: &mut dyn Host) {
         let statement = match line.statement() {
             Some(Statement::Command(command)) => Some(command),
             _ => None,
@@ -377,11 +670,11 @@ impl Expander {
                 continue;
             }
             let word = token.text().to_ascii_lowercase();
-            let site = token.text_range();
+            let site = Span::new(text, token.text_range());
             let leads = statement
                 .as_ref()
                 .and_then(Command::word)
-                .is_some_and(|w| w.text_range() == site);
+                .is_some_and(|w| w.text_range() == token.text_range());
             match word.as_str() {
                 ".else" => {
                     let result = self.conditionals.otherwise();
@@ -393,7 +686,7 @@ impl Expander {
                     if result.is_ok() {
                         let cond = self.conditionals.active()
                             && match statement.as_ref().filter(|_| leads) {
-                                Some(command) => self.condition(command, &word, host),
+                                Some(command) => self.condition(command, &word, text, host),
                                 None => {
                                     self.report_kind(
                                         DiagnosticKind::Unsupported,
@@ -418,11 +711,11 @@ impl Expander {
             if self.conditionals.active() {
                 if leads {
                     // The line's own command ran, so its syntax counts.
-                    for problem in self.line_problems.get(index).cloned().unwrap_or_default() {
-                        self.diagnostics.push((self.text, problem));
+                    for problem in problems {
+                        self.diagnostics.push((text, problem));
                     }
                 } else {
-                    self.refuse_rest(&tokens[at + 1..]);
+                    self.refuse_rest(&tokens[at + 1..], text);
                 }
                 return;
             }
@@ -431,13 +724,11 @@ impl Expander {
 
     /// Refuses whatever follows a conditional that ended a skipped branch
     /// partway through its line.
-    fn refuse_rest(&mut self, rest: &[SyntaxToken]) {
+    fn refuse_rest(&mut self, rest: &[SyntaxToken], text: TextId) {
         let mut tokens = rest.iter().filter(|t| {
             !matches!(
                 t.kind(),
-                lang198x_syntax::SyntaxKind::WHITESPACE
-                    | lang198x_syntax::SyntaxKind::COMMENT
-                    | lang198x_syntax::SyntaxKind::NEWLINE
+                SyntaxKind::WHITESPACE | SyntaxKind::COMMENT | SyntaxKind::NEWLINE
             )
         });
         if let Some(first) = tokens.next() {
@@ -445,31 +736,36 @@ impl Expander {
                 .next_back()
                 .map_or(first.text_range(), SyntaxToken::text_range);
             self.report(
+                text,
                 first.text_range().cover(end),
                 "expected the end of the line",
             );
         }
     }
 
-    fn misfit(&mut self, result: Result<(), Misfit>, site: TextRange, word: &str) {
+    fn misfit(&mut self, result: Result<(), Misfit>, site: Span, word: &str) {
         match result {
             Ok(()) => {}
             Err(Misfit::Unexpected) => {
                 let message = format!("`{word}` with no `.if` open");
-                self.report(site, &message);
+                self.report(site.text(), site.range(), &message);
             }
             Err(Misfit::DuplicateElse) => {
-                self.report(site, "a second `.else` for the same `.if`");
+                self.report(
+                    site.text(),
+                    site.range(),
+                    "a second `.else` for the same `.if`",
+                );
             }
         }
     }
 
-    fn report(&mut self, range: TextRange, message: &str) {
-        self.report_kind(DiagnosticKind::Invalid, range, message);
+    fn report(&mut self, text: TextId, range: TextRange, message: &str) {
+        self.report_kind(DiagnosticKind::Invalid, Span::new(text, range), message);
     }
 
-    fn report_kind(&mut self, kind: DiagnosticKind, range: TextRange, message: &str) {
+    fn report_kind(&mut self, kind: DiagnosticKind, site: Span, message: &str) {
         self.diagnostics
-            .push((self.text, Diagnostic::new(kind, range, message)));
+            .push((site.text(), Diagnostic::new(kind, site.range(), message)));
     }
 }

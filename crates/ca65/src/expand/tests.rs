@@ -6,6 +6,7 @@ use lang198x_syntax::DiagnosticKind;
 
 use super::*;
 use crate::Profile;
+use crate::ast::View;
 
 mod host;
 
@@ -80,6 +81,70 @@ const MEASURED: &[(&str, Want)] = &[
     (
         ".if later\n.endif\nlater=1\n",
         Refused("`later` is not defined"),
+    ),
+    // Macros.
+    (".macro m op\n op #1\n.endmacro\nm lda\n", Bytes(&[0xA9, 1])),
+    (
+        ".macro m p\n.byte p\n.endmacro\nm {1}\nm 2\n",
+        Bytes(&[1, 2]),
+    ),
+    (
+        ".macro m p\n.byte .paramcount, p\n.endmacro\nm {1}\n",
+        Bytes(&[1, 1]),
+    ),
+    (
+        ".macro m p,q\n.byte .paramcount\n.endmacro\nm 1\nm 1,2\n",
+        Bytes(&[1, 2]),
+    ),
+    (".macro m p\n.byte p+0\n.endmacro\nm\n", Bytes(&[0])),
+    (".macro m p\n.byte <p\n.endmacro\nm $1234\n", Bytes(&[0x34])),
+    (".macro m P\n.byte p\n.endmacro\np=5\nm 1\n", Bytes(&[5])),
+    (
+        ".macro m p\n.local l\nl: .byte p\n.word l\n.endmacro\nm 1\nm 2\n",
+        Bytes(&[1, 0, 0, 2, 3, 0]),
+    ),
+    (
+        ".macro m\n.byte 1\n.exitmacro\n.byte 2\n.endmacro\nm\n",
+        Bytes(&[1]),
+    ),
+    (
+        ".macro m\n.if 0\n.exitmacro\n.endif\n.byte 1\n.if 1\n.exitmacro\n.endif\n.byte 2\n.endmacro\nm\n.byte 3\n",
+        Bytes(&[1, 3]),
+    ),
+    // A conditional opened in a macro stays open after it ends.
+    (
+        ".macro m\n.if 1\n.endmacro\nm\n.byte 1\n.endif\n",
+        Bytes(&[1]),
+    ),
+    (".exitmacro\n", Refused("`.exitmacro` outside a macro")),
+    (
+        ".macro m p\nm p\n.endmacro\nm 1\n",
+        Refused("too many nested macro calls"),
+    ),
+    (
+        ".macro m p, q\n.byte p, q\n.endmacro\nm 1\n",
+        Refused("expected a value"),
+    ),
+    (
+        ".macro m\n.endmacro\nm 1\n",
+        Refused("takes 0 arguments, and 1 are given"),
+    ),
+    // Definitions do not nest: the first `.endmacro` ends the outer one.
+    (
+        ".macro outer\n.macro inner\n.byte 7\n.endmacro\n.endmacro\nouter\ninner\n",
+        Refused("no `.endmacro`"),
+    ),
+    (
+        ".macro m\n.byte 1\n.endmacro\n.macro m\n.endmacro\n",
+        Refused("already defined"),
+    ),
+    (
+        ".if 0\n.macro m\n.endmacro\n.endif\nm\n",
+        Refused("expected `:` after a name"),
+    ),
+    (
+        ".mac m\n.byte 1\n.endmac\nm\n.delmac m\nm\n",
+        Refused("expected `:` after a name"),
     ),
 ];
 
@@ -181,4 +246,142 @@ fn an_active_line_knows_where_it_is() {
     let line = expander.next_line(&mut host).expect("a line");
     assert_eq!(line.text(), line.span().text());
     assert_eq!(line.span().range().start().get(), 1);
+}
+
+/// Every line `source` hands to the host.
+fn active_lines(source: &str) -> (Expander, Vec<ActiveLine>) {
+    let mut expander = Expander::new(source, Profile::CA65_2_19_6502).expect("parses");
+    let mut host = host::TestHost::default();
+    let mut lines = Vec::new();
+    while let Some(line) = expander.next_line(&mut host) {
+        lines.push(line);
+    }
+    (expander, lines)
+}
+
+/// The first token of `line` whose text is `text`.
+fn token(line: &ActiveLine, text: &str) -> lang198x_syntax::SyntaxToken {
+    line.line()
+        .syntax()
+        .descendants()
+        .filter_map(lang198x_syntax::SyntaxElement::into_token)
+        .find(|t| t.text() == text)
+        .expect("the token")
+}
+
+#[test]
+fn a_macro_lines_text_traces_to_the_body_and_the_argument() {
+    use lang198x_syntax::Span;
+    let source = ".macro m p\n lda #p\n.endmacro\nm 5\n";
+    let (expander, lines) = active_lines(source);
+    assert_eq!(lines.len(), 1);
+    let line = &lines[0];
+    let provenance = expander.provenance();
+    let traced = |text: &str| {
+        let token = token(line, text);
+        let span = provenance
+            .trace(Span::new(line.text(), token.text_range()))
+            .expect("traces to the file");
+        span.range().slice(source).map(str::to_owned)
+    };
+    assert_eq!(traced("lda").as_deref(), Some("lda"));
+    let five = token(line, "5");
+    let span = provenance
+        .trace(Span::new(line.text(), five.text_range()))
+        .expect("traces");
+    assert_eq!(span.range().start().get(), 31, "the argument, not the body");
+    assert_eq!(span.range().slice(source), Some("5"));
+    let sites = provenance.sites(Span::new(line.text(), five.text_range()));
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].range().slice(source), Some("m 5"));
+}
+
+#[test]
+fn made_up_text_says_what_it_was_made_from() {
+    use lang198x_syntax::Span;
+    let source = ".macro m\n.local l\nl: .byte .paramcount\n.endmacro\nm\n";
+    let (expander, lines) = active_lines(source);
+    let line = &lines[0];
+    let name = token(line, "LOCAL_MACRO_SYMBOL_0000");
+    let span = Span::new(line.text(), name.text_range());
+    let provenance = expander.provenance();
+    assert_eq!(provenance.trace(span), None);
+    let lang198x_syntax::TextId::Expansion(id) = line.text() else {
+        panic!("a macro's text")
+    };
+    let origin = provenance
+        .get(id)
+        .and_then(|e| e.origin_at(name.text_range().start()))
+        .expect("an origin");
+    let made_from = origin.made_from().expect("synthesised");
+    assert_eq!(made_from.range().slice(source), Some("l"));
+    let count = token(line, "0");
+    let origin = provenance
+        .get(id)
+        .and_then(|e| e.origin_at(count.text_range().start()))
+        .expect("an origin");
+    assert_eq!(
+        origin.made_from().and_then(|s| s.range().slice(source)),
+        Some(".paramcount")
+    );
+}
+
+#[test]
+fn a_label_before_a_call_reaches_the_host_first() {
+    let (_, lines) = active_lines(".macro m\n nop\n.endmacro\nhere: m\n: m\n");
+    let flags: Vec<bool> = lines.iter().map(ActiveLine::label_only).collect();
+    assert_eq!(flags, [true, false, true, false]);
+    assert_eq!(
+        run(".macro m\n.word here\n.endmacro\n.byte 9\nhere: m\n"),
+        Ok(vec![9, 1, 0])
+    );
+}
+
+#[test]
+fn deleting_a_macro_that_does_not_exist() {
+    let problems = run(".delmac m\n").expect_err("no such macro");
+    assert!(
+        problems[0].contains("no macro is named `m`"),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn the_text_limit_stops_a_growing_macro() {
+    let limits = Limits {
+        expanded_bytes: 100,
+        ..Limits::default()
+    };
+    let source = ".macro m p\n.byte 1\nm {p p}\n.endmacro\nm 1\n";
+    let mut expander =
+        Expander::with_limits(source, Profile::CA65_2_19_6502, limits).expect("parses");
+    let mut host = host::TestHost::default();
+    while expander.next_line(&mut host).is_some() {}
+    let messages: Vec<&str> = expander
+        .diagnostics()
+        .iter()
+        .map(|(_, d)| d.message())
+        .collect();
+    assert!(
+        messages.iter().any(|m| m.contains("too much text")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn each_call_has_its_own_local_names() {
+    let (_, lines) = active_lines(".macro m\n.local l\nl: nop\n.endmacro\nm\nm\n");
+    let names: Vec<String> = lines
+        .iter()
+        .filter_map(|l| {
+            l.line()
+                .label()
+                .and_then(|label| label.name())
+                .map(|n| n.text())
+        })
+        .collect();
+    assert_eq!(
+        names,
+        ["LOCAL_MACRO_SYMBOL_0000", "LOCAL_MACRO_SYMBOL_0001"]
+    );
 }
