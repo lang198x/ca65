@@ -25,19 +25,17 @@ pub(super) struct Macro {
     pub(super) params: Vec<String>,
     /// The `.local` names, in order.
     locals: Vec<String>,
-    /// The body's lines, in the text the macro was defined in.
-    body: Vec<Line>,
-    /// The text the body is in.
-    text: TextId,
+    /// The body's lines, each with the text it is in.
+    body: Vec<(Line, TextId)>,
 }
 
 impl Macro {
-    /// A macro with `params` whose body is `lines`, in `text`. `.local` lines
-    /// are taken out of the body and their names kept.
-    pub(super) fn new(params: Vec<String>, lines: Vec<Line>, text: TextId) -> Self {
+    /// A macro with `params` whose body is `lines`, each with its text.
+    /// `.local` lines are taken out of the body and their names kept.
+    pub(super) fn new(params: Vec<String>, lines: Vec<(Line, TextId)>) -> Self {
         let mut locals = Vec::new();
         let mut body = Vec::new();
-        for line in lines {
+        for (line, text) in lines {
             let tokens: Vec<SyntaxToken> = significant(&line).collect();
             let is_local = tokens.first().is_some_and(|t| {
                 t.kind() == kinds::CONTROL && t.text().eq_ignore_ascii_case(".local")
@@ -50,14 +48,13 @@ impl Macro {
                         .map(|t| t.text().to_owned()),
                 );
             } else {
-                body.push(line);
+                body.push((line, text));
             }
         }
         Self {
             params,
             locals,
             body,
-            text,
         }
     }
 
@@ -92,13 +89,13 @@ impl Macro {
             })
             .collect();
         let mut builder = ExpansionBuilder::new();
-        for line in &self.body {
+        for (line, text) in &self.body {
             for token in line
                 .syntax()
                 .descendants()
                 .filter_map(SyntaxElement::into_token)
             {
-                let from = Span::new(self.text, token.text_range());
+                let from = Span::new(*text, token.text_range());
                 let synthesised = |text: &str, builder: &mut ExpansionBuilder| {
                     builder.push(
                         text,

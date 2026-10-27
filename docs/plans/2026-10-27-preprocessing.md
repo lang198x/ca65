@@ -100,14 +100,30 @@ against its manual. A `.endrepeat` after other tokens on its line is reported
 as unsupported when the body runs, since ca65 joins the tokens on either side
 of it into lines that it refused in every program measured.
 
-### 5e. Define-style macros and token functions
+### 5e. Define-style macros
 
 `.define` with and without parameters, expanded everywhere they appear,
-including in macro bodies as they are defined, and `.undef`. The token
-functions `.concat`, `.ident`, `.left`, `.mid`, `.right`, `.string` and
-`.sprintf`, each with `Synthesised` provenance naming every input.
+including in macro bodies as they are defined, and `.undef`.
 
-### 5f. Includes and packages
+As built: the expander rewrites each line it reads with the defines in
+force, before the line runs or is skipped, and again as a classic macro's
+or a repeat's body is collected, so a define can end a skipped branch, a
+repeat or a macro body. A use takes exactly as many arguments as there are
+parameters. Each runs to a comma or the end of the line, unless braced, so
+parentheses are only tokens: `F(2)` passes `(2)`. Classic and define-style
+macros share their names. A define whose body uses its own name is
+refused, which also rules out a define that expands for ever.
+
+This step was split in two: token functions need the scanner's view of a
+line too, but nothing else here depends on them.
+
+### 5f. Token functions
+
+The token functions `.concat`, `.ident`, `.left`, `.mid`, `.right`,
+`.string` and `.sprintf`, each with `Synthesised` provenance naming every
+input.
+
+### 5g. Includes and packages
 
 `.include` and `.macpack`, opened when reached, through the loader, with
 `Included` provenance. Missing files, cycles and deep nesting give

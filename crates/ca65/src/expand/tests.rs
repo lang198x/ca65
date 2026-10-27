@@ -8,6 +8,7 @@ use super::*;
 use crate::Profile;
 use crate::ast::View;
 
+mod defines;
 mod host;
 mod repeats;
 
