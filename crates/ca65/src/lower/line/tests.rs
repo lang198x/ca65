@@ -13,7 +13,7 @@ use super::line;
 use crate::Profile;
 use crate::ast::{Expr, NameRef};
 use crate::expand::{Expander, Host};
-use crate::lower::{self, Known, Scope, Segment, Size, Value};
+use crate::lower::{self, Declared, Known, Scope, Segment, Size, Value, Visibility, Visible};
 
 /// The assembler: what each name is known as so far, and the final values
 /// from the pass before.
@@ -450,6 +450,80 @@ fn segment_commands_are_reported() {
     assert_eq!(segment(".popseg\n"), Ok(Some(Segment::Pop)));
     assert_eq!(segment("nop\n"), Ok(None));
     assert!(segment(".segment 5\n").is_err());
+}
+
+/// The first line of `source`: what it declares, and its labels.
+fn declared(source: &str) -> Result<(Option<Visibility>, Vec<Option<String>>), String> {
+    let profile = Profile::CA65_2_19_6502;
+    let mut expander = Expander::new(source, profile).expect("parses");
+    let mut mini = Mini::default();
+    let active = expander.next_line(&mut mini).expect("a line");
+    line(&active, profile, &mini)
+        .map(|lowered| {
+            let labels = lowered.items.into_iter().map(|item| item.label).collect();
+            (lowered.visibility, labels)
+        })
+        .map_err(|d| d.message().to_owned())
+}
+
+#[test]
+fn declarations_are_reported() {
+    let names = |list: &[(&str, Option<Size>)]| -> Vec<Declared> {
+        list.iter()
+            .map(|(name, size)| Declared {
+                name: (*name).to_owned(),
+                size: *size,
+            })
+            .collect()
+    };
+    let seen = |source: &str| declared(source).map(|(v, _)| v.map(|v| (v.kind, v.names)));
+    assert_eq!(
+        seen(".import v, w\n"),
+        Ok(Some((Visible::Import, names(&[("v", None), ("w", None)]))))
+    );
+    assert_eq!(
+        seen(".importzp v\n"),
+        Ok(Some((Visible::Import, names(&[("v", Some(Size::Zero))]))))
+    );
+    assert_eq!(
+        seen(".import v: zp, w: abs\n"),
+        Ok(Some((
+            Visible::Import,
+            names(&[("v", Some(Size::Zero)), ("w", Some(Size::Absolute))])
+        )))
+    );
+    assert_eq!(
+        seen(".EXPORTZP v\n"),
+        Ok(Some((Visible::Export, names(&[("v", Some(Size::Zero))]))))
+    );
+    assert_eq!(
+        seen(".global v\n"),
+        Ok(Some((Visible::Global, names(&[("v", None)]))))
+    );
+    assert_eq!(
+        seen(".globalzp v\n"),
+        Ok(Some((Visible::Global, names(&[("v", Some(Size::Zero))]))))
+    );
+    assert_eq!(
+        seen(".forceimport v\n"),
+        Ok(Some((Visible::ForceImport, names(&[("v", None)]))))
+    );
+    assert_eq!(seen("nop\n"), Ok(None));
+    // An export with a value also defines the name.
+    assert_eq!(
+        declared(".export v := 3, w, q = 4\n").map(|(_, labels)| labels),
+        Ok(vec![Some("v".to_owned()), Some("q".to_owned())])
+    );
+    for refused in [
+        ".import v := 3\n",
+        ".global v := 3\n",
+        ".export v: far\n",
+        ".import v: bogus\n",
+        ".export s::v\n",
+        ".import ::v\n",
+    ] {
+        assert!(declared(refused).is_err(), "{refused:?}");
+    }
 }
 
 #[test]

@@ -37,6 +37,49 @@ pub struct Lowered {
     /// The change the line makes to the segment later lines go into, made
     /// after its statements.
     pub segment: Option<Segment>,
+    /// The names the line shows a linker, or asks one for.
+    pub visibility: Option<Visibility>,
+}
+
+/// The names a line shows a linker, or asks one for, from `.import`,
+/// `.export`, `.global`, their zero-page forms, or `.forceimport`.
+///
+/// Lowering only reports these, since the assembler keeps the names. An
+/// export written with a value, such as `.export v := 3`, also defines the
+/// name, as an assignment among the line's items.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Visibility {
+    /// What the line does with the names.
+    pub kind: Visible,
+    /// The names, in order.
+    pub names: Vec<Declared>,
+}
+
+/// What a line does with the names it declares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Visible {
+    /// `.import`: each name is defined elsewhere, by another program.
+    Import,
+    /// `.forceimport`: each name is imported even if it is never used.
+    ForceImport,
+    /// `.export`: each name is defined here, for another program.
+    Export,
+    /// `.global`: each name is exported if this program defines it, and
+    /// imported if it does not.
+    Global,
+}
+
+/// One name a line declares, with the address size written for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Declared {
+    /// The name, which has no scope written before it.
+    pub name: String,
+    /// The address size: the zero page for the `zp` forms, the size written
+    /// after the name, or `None` for neither, which ca65 takes as absolute.
+    pub size: Option<Size>,
 }
 
 /// A change to the segment lines go into, from `.segment`, its short forms
@@ -120,6 +163,8 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
     let known: &dyn Known = &on_line;
     let mut scope = None;
     let mut segment = None;
+    let mut visibility = None;
+    let mut defined = Vec::new();
     let op = if line.label_only() {
         None
     } else {
@@ -162,7 +207,14 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
                         segment = Some(change);
                         None
                     }
-                    None => command_op(&command, line, known)?,
+                    None => match declared(&command, known)? {
+                        Some((declared, values)) => {
+                            visibility = Some(declared);
+                            defined = values;
+                            None
+                        }
+                        None => command_op(&command, line, known)?,
+                    },
                 },
             },
             Some(_) => {
@@ -188,10 +240,12 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
         }),
         (None, None) => {}
     }
+    items.extend(defined);
     Ok(Lowered {
         items,
         scope,
         segment,
+        visibility,
     })
 }
 
@@ -294,6 +348,74 @@ fn address_size(word: &str) -> Option<Size> {
         "far" | "long" => Some(Size::Far),
         _ => None,
     }
+}
+
+/// The names a command declares, if it is `.import`, `.export`, `.global`,
+/// one of their zero-page forms or `.forceimport`, with an assignment for
+/// each export written with a value.
+fn declared(
+    command: &Command,
+    known: &dyn Known,
+) -> Result<Option<(Visibility, Vec<Item>)>, Diagnostic> {
+    let word = command
+        .word()
+        .map(|w| w.text().to_ascii_lowercase())
+        .unwrap_or_default();
+    let (kind, zero_page) = match word.as_str() {
+        ".import" => (Visible::Import, false),
+        ".importzp" => (Visible::Import, true),
+        ".forceimport" => (Visible::ForceImport, false),
+        ".export" => (Visible::Export, false),
+        ".exportzp" => (Visible::Export, true),
+        ".global" => (Visible::Global, false),
+        ".globalzp" => (Visible::Global, true),
+        _ => return Ok(None),
+    };
+    let mut names = Vec::new();
+    let mut defined = Vec::new();
+    for item in command.items() {
+        let range = item.syntax().text_range();
+        let name = item
+            .name()
+            .ok_or_else(|| invalid(range, "expected a name"))?
+            .text();
+        if name.contains("::") {
+            return Err(invalid(range, "a declared name has no scope before it"));
+        }
+        let size = match item.address_size() {
+            Some(word) => match address_size(&word.text().to_ascii_lowercase()) {
+                Some(Size::Far) => {
+                    return Err(invalid(
+                        range,
+                        "the address size `far` is not one the 6502 has",
+                    ));
+                }
+                Some(size) => Some(size),
+                None => {
+                    return Err(invalid(
+                        range,
+                        &format!("`{}` is not an address size", word.text()),
+                    ));
+                }
+            },
+            None => zero_page.then_some(Size::Zero),
+        };
+        if let Some(value) = item.value() {
+            if kind != Visible::Export {
+                return Err(invalid(range, &format!("`{word}` takes no value")));
+            }
+            defined.push(Item {
+                label: Some(name.clone()),
+                op: Some(Operation::Equ(expr::expression(&value, known)?)),
+            });
+        }
+        names.push(Declared { name, size });
+    }
+    if names.is_empty() {
+        let range = command.syntax().text_range();
+        return Err(invalid(range, "expected a name"));
+    }
+    Ok(Some((Visibility { kind, names }, defined)))
 }
 
 /// The change to the scopes a command makes, if it is `.scope`, `.proc`,

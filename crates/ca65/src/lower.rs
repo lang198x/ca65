@@ -17,7 +17,7 @@ mod line;
 
 pub use expr::expression;
 pub use instruction::instruction;
-pub use line::{Item, Lowered, Scope, Segment, line};
+pub use line::{Declared, Item, Lowered, Scope, Segment, Visibility, Visible, line};
 
 /// The address sizes ca65 gives a value: how many bytes an address needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
