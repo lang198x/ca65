@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.6](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.5...lang198x-ca65-v0.0.6) - 2026-10-27
+
+### Added
+
+- report ca65 segment changes to the assembler
+
 ## [0.0.5](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.4...lang198x-ca65-v0.0.5) - 2026-10-27
 
 ### Added
