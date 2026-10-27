@@ -15,7 +15,7 @@
 //! treats a start above 100 as 0, which its manual does not say; that is
 //! not copied.
 
-use lang198x_syntax::{DiagnosticKind, Origin, Span, SyntaxKind};
+use lang198x_syntax::{Origin, Span, SyntaxKind};
 
 use super::defines::{Piece, Problem};
 use crate::kinds;
@@ -81,6 +81,7 @@ impl Call {
                 call_site: self.site,
             },
             site: self.site,
+            bytes: None,
         }
     }
 
@@ -143,9 +144,10 @@ impl Stream<'_> {
         }
     }
 
-    fn string(&mut self, call: &Call) -> Result<String, Problem> {
+    /// A string argument's bytes.
+    fn string(&mut self, call: &Call) -> Result<Vec<u8>, Problem> {
         let piece = self.expect(call, kinds::STRING, "a string")?;
-        Ok(contents(&piece.text).to_owned())
+        Ok(piece.string_bytes())
     }
 
     /// The pieces of an expression, up to a `,` or `)` outside parentheses,
@@ -210,15 +212,15 @@ impl Stream<'_> {
         self.expect(call, kinds::L_PAREN, "`(`")?;
         match call.name.as_str() {
             ".concat" => {
-                let mut text = self.string(call)?;
+                let mut bytes = self.string(call)?;
                 loop {
                     match self.next_solid()? {
-                        Some(p) if p.kind == kinds::COMMA => text.push_str(&self.string(call)?),
+                        Some(p) if p.kind == kinds::COMMA => bytes.extend(self.string(call)?),
                         Some(p) if p.kind == kinds::R_PAREN => break,
                         _ => return Err(call.problem("expected `,` or `)` in `.concat`")),
                     }
                 }
-                Ok(vec![string_piece(call, &text)?])
+                Ok(vec![string_piece(call, bytes)])
             }
             ".ident" => {
                 let name = self.string(call)?;
@@ -250,18 +252,19 @@ impl Stream<'_> {
             ".string" => {
                 let text = self.name_or_number(call)?;
                 self.expect(call, kinds::R_PAREN, "`)`")?;
-                Ok(vec![string_piece(call, &text)?])
+                Ok(vec![string_piece(call, text.into_bytes())])
             }
             _ => {
-                let text = self.sprintf(call)?;
-                Ok(vec![string_piece(call, &text)?])
+                let bytes = self.sprintf(call)?;
+                Ok(vec![string_piece(call, bytes)])
             }
         }
     }
 
-    /// The identifier `.ident` makes from `name`.
-    fn ident(&self, call: &Call, name: &str) -> Result<Piece, Problem> {
-        let rest = name.strip_prefix('@').unwrap_or(name);
+    /// The identifier `.ident` makes from the bytes of `name`.
+    fn ident(&self, call: &Call, name: &[u8]) -> Result<Piece, Problem> {
+        let name = String::from_utf8_lossy(name);
+        let rest = name.strip_prefix('@').unwrap_or(&name);
         let mut chars = rest.chars();
         let valid = chars
             .next()
@@ -277,7 +280,7 @@ impl Stream<'_> {
         } else {
             kinds::IDENT
         };
-        Ok(call.made(name.to_owned(), kind))
+        Ok(call.made(name.into_owned(), kind))
     }
 
     /// `.string`'s argument: a name, perhaps scoped, or a number.
@@ -316,51 +319,51 @@ impl Stream<'_> {
         }
     }
 
-    /// `.sprintf(format, args)`, after its `(`, up to and including its `)`.
-    fn sprintf(&mut self, call: &Call) -> Result<String, Problem> {
+    /// `.sprintf(format, args)`, after its `(`, up to and including its `)`:
+    /// the bytes it makes.
+    fn sprintf(&mut self, call: &Call) -> Result<Vec<u8>, Problem> {
         let format = self.string(call)?;
-        let mut out = String::new();
-        let mut chars = format.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c != '%' {
-                out.push(c);
+        let mut out = Vec::new();
+        let mut bytes = format.into_iter().peekable();
+        while let Some(b) = bytes.next() {
+            if b != b'%' {
+                out.push(b);
                 continue;
             }
-            if chars.peek() == Some(&'%') {
-                chars.next();
-                out.push('%');
+            if bytes.peek() == Some(&b'%') {
+                bytes.next();
+                out.push(b'%');
                 continue;
             }
             let mut spec = Spec::default();
-            while let Some(&flag) = chars.peek() {
+            while let Some(&flag) = bytes.peek() {
                 match flag {
-                    '-' => spec.left = true,
-                    '+' => spec.plus = true,
-                    ' ' => spec.space = true,
-                    '#' => spec.alternate = true,
-                    '0' => spec.zero = true,
+                    b'-' => spec.left = true,
+                    b'+' => spec.plus = true,
+                    b' ' => spec.space = true,
+                    b'#' => spec.alternate = true,
+                    b'0' => spec.zero = true,
                     _ => break,
                 }
-                chars.next();
+                bytes.next();
             }
-            spec.width = digits(&mut chars);
-            if chars.peek() == Some(&'.') {
-                chars.next();
-                spec.precision = Some(digits(&mut chars));
+            spec.width = digits(&mut bytes);
+            if bytes.peek() == Some(&b'.') {
+                bytes.next();
+                spec.precision = Some(digits(&mut bytes));
             }
-            let Some(conversion) = chars.next() else {
+            let Some(conversion) = bytes.next().map(char::from) else {
                 return Err(call.problem("the format of `.sprintf` ends partway through"));
             };
             self.expect(call, kinds::COMMA, "`,`")?;
             let piece = match conversion {
                 'd' | 'i' | 'o' | 'u' | 'x' | 'X' => spec.integer(self.value(call)?, conversion),
                 's' => {
-                    let text = self.string(call)?;
-                    let text = match spec.precision {
-                        Some(n) => text.chars().take(n).collect(),
-                        None => text,
-                    };
-                    spec.pad(String::new(), text, false)
+                    let mut text = self.string(call)?;
+                    if let Some(n) = spec.precision {
+                        text.truncate(n);
+                    }
+                    spec.pad(Vec::new(), text, false)
                 }
                 'c' => {
                     let value = self.value(call)?;
@@ -368,17 +371,7 @@ impl Stream<'_> {
                         .ok()
                         .filter(|b| *b != 0)
                         .ok_or_else(|| call.problem("a `%c` argument must be 1 to 255"))?;
-                    if !byte.is_ascii() {
-                        return Err(Problem {
-                            site: call.site,
-                            message: format!(
-                                "`.sprintf` making the byte ${byte:02X}, which this text cannot \
-                                 hold, is not supported"
-                            ),
-                            kind: DiagnosticKind::Unsupported,
-                        });
-                    }
-                    spec.pad(String::new(), char::from(byte).to_string(), false)
+                    spec.pad(Vec::new(), vec![byte], false)
                 }
                 other => {
                     return Err(
@@ -386,7 +379,7 @@ impl Stream<'_> {
                     );
                 }
             };
-            out.push_str(&piece);
+            out.extend(piece);
         }
         self.expect(call, kinds::R_PAREN, "`)`")?;
         Ok(out)
@@ -398,25 +391,32 @@ fn count(value: i64) -> usize {
     usize::try_from(value).unwrap_or(0)
 }
 
-/// What a string token holds, without its quotes.
-fn contents(text: &str) -> &str {
-    let text = text.strip_prefix('"').unwrap_or(text);
-    text.strip_suffix('"').unwrap_or(text)
+/// A string token holding `bytes`. Its text is the bytes in quotes, which
+/// is how it is shown, since an expansion is not lexed again. A byte above
+/// 127, which the text cannot hold, is shown as an escape such as `\xFF`,
+/// and the piece keeps the bytes themselves.
+fn string_piece(call: &Call, bytes: Vec<u8>) -> Piece {
+    let mut piece = call.made(shown(&bytes), kinds::STRING);
+    if !bytes.is_ascii() {
+        piece.bytes = Some(bytes);
+    }
+    piece
 }
 
-/// A string token holding `text`.
-fn string_piece(call: &Call, text: &str) -> Result<Piece, Problem> {
-    if text.contains(['"', '\n', '\r']) {
-        return Err(Problem {
-            site: call.site,
-            message: format!(
-                "`{}` making a string with a quote or a line break in it is not supported",
-                call.name
-            ),
-            kind: DiagnosticKind::Unsupported,
-        });
+/// How a made string's bytes are shown: in quotes, with each byte above 127
+/// as `\xNN`, and a backslash doubled when there is such a byte.
+fn shown(bytes: &[u8]) -> String {
+    let escaped = !bytes.is_ascii();
+    let mut text = String::from("\"");
+    for &b in bytes {
+        match b {
+            0x80.. => text.push_str(&format!("\\x{b:02X}")),
+            b'\\' if escaped => text.push_str("\\\\"),
+            _ => text.push(char::from(b)),
+        }
     }
-    Ok(call.made(format!("\"{text}\""), kinds::STRING))
+    text.push('"');
+    text
 }
 
 /// The tokens of a list, with a space between each, as tokens.
@@ -429,11 +429,15 @@ fn spaced(call: &Call, list: Vec<Piece>) -> Vec<Piece> {
     out
 }
 
-fn digits(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> usize {
+fn digits(bytes: &mut std::iter::Peekable<std::vec::IntoIter<u8>>) -> usize {
     let mut n = 0_usize;
-    while let Some(d) = chars.peek().and_then(|c| c.to_digit(10)) {
-        n = n.saturating_mul(10).saturating_add(d as usize);
-        chars.next();
+    while let Some(d) = bytes
+        .peek()
+        .filter(|b| b.is_ascii_digit())
+        .map(|b| b - b'0')
+    {
+        n = n.saturating_mul(10).saturating_add(usize::from(d));
+        bytes.next();
     }
     n
 }
@@ -453,7 +457,7 @@ struct Spec {
 
 impl Spec {
     /// `value` as `%d`, `%i`, `%o`, `%u`, `%x` or `%X` on a `long`.
-    fn integer(&self, value: i64, conversion: char) -> String {
+    fn integer(&self, value: i64, conversion: char) -> Vec<u8> {
         #[allow(clippy::cast_sign_loss)]
         let bits = value as u64;
         let (sign, mut digits) = match conversion {
@@ -492,19 +496,26 @@ impl Spec {
             }
         }
         let zero = self.zero && self.precision.is_none();
-        self.pad(prefix, digits, zero)
+        self.pad(prefix.into_bytes(), digits.into_bytes(), zero)
     }
 
-    /// `body` after `prefix`, padded to the width.
-    fn pad(&self, prefix: String, body: String, zero: bool) -> String {
-        let len = prefix.chars().count() + body.chars().count();
-        let fill = self.width.saturating_sub(len);
+    /// `body` after `prefix`, padded to the width in bytes.
+    fn pad(&self, prefix: Vec<u8>, body: Vec<u8>, zero: bool) -> Vec<u8> {
+        let fill = self.width.saturating_sub(prefix.len() + body.len());
+        let mut out = Vec::with_capacity(fill + prefix.len() + body.len());
         if self.left {
-            format!("{prefix}{body}{}", " ".repeat(fill))
+            out.extend(prefix);
+            out.extend(body);
+            out.extend(std::iter::repeat_n(b' ', fill));
         } else if zero {
-            format!("{prefix}{}{body}", "0".repeat(fill))
+            out.extend(prefix);
+            out.extend(std::iter::repeat_n(b'0', fill));
+            out.extend(body);
         } else {
-            format!("{}{prefix}{body}", " ".repeat(fill))
+            out.extend(std::iter::repeat_n(b' ', fill));
+            out.extend(prefix);
+            out.extend(body);
         }
+        out
     }
 }

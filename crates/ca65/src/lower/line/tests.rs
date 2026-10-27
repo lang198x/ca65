@@ -244,6 +244,9 @@ const MEASURED: &[(&str, Option<&str>)] = &[
     (".org $10\nol: nop\nlda ol\n", Some("eaa510")),
     ("bne *\nbne lab\nlab:\n", Some("d0fed000")),
     ("q = 1000\nq2 = q - 990\nlda q2\n", Some("a50a")),
+    // A made string keeps bytes its text cannot hold.
+    (".asciiz .sprintf(\"%c%c\",200,1)\n", Some("c80100")),
+    (".byte .sprintf(\"%c\",255), 1\n", Some("ff01")),
     // `.sizeof` a label: the bytes its line made, known now.
     ("a1: .byte 1,2,3\n.byte .sizeof(a1)\n", Some("01020303")),
     ("a1:\n.byte 1,2,3\n.byte .sizeof(a1)\n", Some("01020300")),

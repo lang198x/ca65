@@ -20,6 +20,7 @@ use lang198x_syntax::{
     DiagnosticKind, Origin, Span, SyntaxElement, SyntaxKind, SyntaxToken, TextId,
 };
 
+use super::made::Strings;
 use crate::ast::{Command, Line, View};
 use crate::kinds;
 
@@ -31,6 +32,9 @@ pub(super) struct Piece {
     pub(super) origin: Origin,
     /// Where the piece's text lies, or what it was made from.
     pub(super) site: Span,
+    /// A made string's bytes, when its text cannot hold them: one with a
+    /// byte above 127.
+    pub(super) bytes: Option<Vec<u8>>,
 }
 
 impl Piece {
@@ -40,6 +44,16 @@ impl Piece {
             kind: token.kind(),
             origin,
             site,
+            bytes: None,
+        }
+    }
+
+    /// What a string piece holds: its kept bytes, or its text without its
+    /// quotes.
+    pub(super) fn string_bytes(&self) -> Vec<u8> {
+        match &self.bytes {
+            Some(bytes) => bytes.clone(),
+            None => unquoted(&self.text).as_bytes().to_vec(),
         }
     }
 
@@ -51,6 +65,12 @@ impl Piece {
     pub(super) fn ends_line(&self) -> bool {
         matches!(self.kind, SyntaxKind::NEWLINE | SyntaxKind::COMMENT)
     }
+}
+
+/// What a string token's text holds, without its quotes.
+pub(super) fn unquoted(text: &str) -> &str {
+    let text = text.strip_prefix('"').unwrap_or(text);
+    text.strip_suffix('"').unwrap_or(text)
 }
 
 /// A define-style macro, as defined.
@@ -134,6 +154,7 @@ pub(super) fn expand(
     text: TextId,
     included_at: Option<Span>,
     limit: usize,
+    strings: &Strings,
 ) -> Result<Option<Vec<Piece>>, Problem> {
     let tokens: Vec<SyntaxToken> = line
         .syntax()
@@ -154,7 +175,7 @@ pub(super) fn expand(
                 Some(site) => Origin::Included { from, site },
                 None => Origin::Source { from },
             };
-            Piece::new(t, origin, from)
+            strings.piece(t, origin, from)
         })
         .collect();
     let mut stream = Stream {
@@ -302,6 +323,7 @@ impl Stream<'_> {
                 call_site: site,
             },
             site,
+            bytes: None,
         };
         let mut text = vec![gap.clone()];
         for (token, from) in &define.body {

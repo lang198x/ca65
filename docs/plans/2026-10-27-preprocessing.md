@@ -136,9 +136,10 @@ Where ca65 V2.19 is wrong against its manual, the manual wins. `.sprintf`'s
 format is "similar to the one of the C printf function", so C's results are
 given where ca65's own formatter differs: `%x` of a negative number, `%#x` of
 0, and the width of `%c` and `%s`. `.mid` takes its start as given, where
-ca65 treats a start above 100 as 0. A string holding a quote or a line
-break, and `.ident` of a name that reads as a register, cannot be written in
-this syntax and are reported as unsupported.
+ca65 treats a start above 100 as 0. Results are handed on as tokens, not
+text (see [expansions keep their tokens](2026-10-27-made-tokens.md)), so
+`.ident` of a name spelt like a register makes a name, and a made string may
+hold a quote, a line break or a byte above 127, as in ca65.
 
 ### 5g. Includes and packages
 

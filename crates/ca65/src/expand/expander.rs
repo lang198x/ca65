@@ -45,7 +45,7 @@ use super::conditional::{Conditionals, Misfit};
 use super::defines::{self, Define, Piece, Problem};
 use super::functions;
 use super::macros::{self, Macro};
-use super::made::Made;
+use super::made::{Made, MadeStrings, Strings};
 use super::repeats::{self, Repeat};
 use crate::ast::{Command, Expr, Line, MacroCall, NameRef, SourceFile, Statement, View};
 use crate::parser::parse_prepared;
@@ -163,6 +163,8 @@ pub struct ActiveLine {
     line: Line,
     text: TextId,
     label_only: bool,
+    /// The made strings on the line whose text cannot hold their bytes.
+    strings: MadeStrings,
 }
 
 impl ActiveLine {
@@ -190,6 +192,23 @@ impl ActiveLine {
     #[must_use]
     pub fn label_only(&self) -> bool {
         self.label_only
+    }
+
+    /// Returns the bytes a string token on the line holds, without its
+    /// quotes, or `None` if `token` is not a string. A string a token
+    /// function made may hold bytes its text cannot, such as `$FF`; those
+    /// are kept beside the text and given here.
+    #[must_use]
+    pub fn string(&self, token: &SyntaxToken) -> Option<Vec<u8>> {
+        if token.kind() != kinds::STRING {
+            return None;
+        }
+        let kept = self
+            .strings
+            .iter()
+            .find(|(at, _)| *at == token.text_range())
+            .map(|(_, bytes)| bytes.clone());
+        Some(kept.unwrap_or_else(|| defines::unquoted(token.text()).as_bytes().to_vec()))
     }
 }
 
@@ -284,6 +303,8 @@ pub struct Expander {
     diagnostics: Vec<(TextId, Diagnostic)>,
     /// A repeat round's unfinished last line, joined to the next line read.
     carry: Option<(Line, TextId)>,
+    /// The bytes of each made string whose text cannot hold them.
+    strings: Strings,
 }
 
 /// The commands that open, turn or close a conditional.
@@ -354,6 +375,7 @@ impl Expander {
             finished: false,
             diagnostics: Vec::new(),
             carry: None,
+            strings: Strings::default(),
         };
         let source = expander.load(TextId::File(FileId::new(0)), text, None, None, true)?;
         expander.sources.push(source);
@@ -392,7 +414,14 @@ impl Expander {
             for problem in problems {
                 self.diagnostics.push((text, problem));
             }
-            if let Some(active) = self.run(line, text, host) {
+            if let Some(mut active) = self.run(line, text, host) {
+                let range = active.line.syntax().text_range();
+                active.strings = self
+                    .strings
+                    .in_text(text)
+                    .into_iter()
+                    .filter(|(at, _)| range.contains_range(*at))
+                    .collect();
                 return Some(active);
             }
         }
@@ -519,7 +548,7 @@ impl Expander {
                 .filter_map(SyntaxElement::into_token)
             {
                 let from = Span::new(text, token.text_range());
-                builder.token(&token, self.copied(from));
+                builder.token(&token, from, self.copied(from), &self.strings);
             }
         }
         let (id, source) = self.add_text(builder, None)?;
@@ -696,6 +725,7 @@ impl Expander {
                             line,
                             text,
                             label_only: true,
+                            strings: Vec::new(),
                         });
                     }
                     Some(".end") => {
@@ -717,6 +747,7 @@ impl Expander {
                             line,
                             text,
                             label_only: true,
+                            strings: Vec::new(),
                         });
                     }
                     Some(".undef" | ".undefine") => {
@@ -749,6 +780,7 @@ impl Expander {
                             line,
                             text,
                             label_only: true,
+                            strings: Vec::new(),
                         });
                     }
                     Some(word) if repeats::is_end(word) => {
@@ -768,6 +800,7 @@ impl Expander {
                         line,
                         text,
                         label_only: true,
+                        strings: Vec::new(),
                     });
                 }
             }
@@ -777,6 +810,7 @@ impl Expander {
             line,
             text,
             label_only: false,
+            strings: Vec::new(),
         })
     }
 
@@ -809,7 +843,7 @@ impl Expander {
             .filter_map(SyntaxElement::into_token)
         {
             let from = Span::new(text, token.text_range());
-            builder.token(&token, self.copied(from));
+            builder.token(&token, from, self.copied(from), &self.strings);
         }
         let Some((id, source)) = self.add_text(builder, None) else {
             return (line, problems, text);
@@ -824,10 +858,11 @@ impl Expander {
     /// Adds an expansion's text to the provenance and parses it from the
     /// tokens it was made of.
     fn add_text(&mut self, made: Made, call_depth: Option<usize>) -> Option<(TextId, Source)> {
-        let (builder, tokens) = made.finish();
+        let (builder, tokens, strings) = made.finish();
         let expansion = builder.finish().ok()?;
         let text = expansion.text().to_owned();
         let id = TextId::Expansion(self.provenance.add(expansion).ok()?);
+        self.strings.add(id, strings);
         let source = self.load(id, &text, Some(tokens), call_depth, false).ok()?;
         Some((id, source))
     }
@@ -912,7 +947,7 @@ impl Expander {
             .expanded_bytes
             .saturating_sub(self.expanded_bytes);
         let site = self.include_site(text);
-        let pieces = match defines::expand(&self.defines, &line, text, site, room) {
+        let pieces = match defines::expand(&self.defines, &line, text, site, room, &self.strings) {
             Ok(None) => return Some((line, problems, text)),
             Ok(Some(pieces)) => pieces,
             Err(problem) => {
@@ -960,7 +995,7 @@ impl Expander {
             .filter_map(SyntaxElement::into_token)
             .map(|t| {
                 let from = Span::new(text, t.text_range());
-                Piece::new(&t, self.copied(from), from)
+                self.strings.piece(&t, self.copied(from), from)
             })
             .collect();
         if !functions::any(&pieces) {
@@ -1074,7 +1109,7 @@ impl Expander {
         }
         let first_local = self.next_local;
         self.next_local += definition.local_count();
-        let builder = definition.expand(call, text, first_local);
+        let builder = definition.expand(call, text, first_local, &self.strings);
         let Some((_, source)) = self.add_text(builder, Some(self.conditionals.depth())) else {
             self.report(text, site, "this macro call's text could not be made");
             return;
@@ -1160,7 +1195,7 @@ impl Expander {
 
     /// Runs a repeat's body once more, if it has more times to run.
     fn run_again(&mut self, mut repeat: Repeat) {
-        let Some(builder) = repeat.next_time() else {
+        let Some(builder) = repeat.next_time(&self.strings) else {
             return;
         };
         let Some((_, mut source)) = self.add_text(builder, None) else {
