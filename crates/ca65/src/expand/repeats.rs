@@ -12,7 +12,9 @@
 //! inner `.repeat 2, i`, and `i::x` becomes `0::x`. Strings and characters
 //! are not names, so `"i"` stays as it is.
 
-use lang198x_syntax::{ExpansionBuilder, Origin, Span, SyntaxElement, SyntaxToken, TextId};
+use lang198x_syntax::{Origin, Span, SyntaxElement, SyntaxToken, TextId};
+
+use super::made::Made;
 
 use super::macros::significant;
 use crate::ast::{Line, View};
@@ -57,14 +59,14 @@ impl Repeat {
 
     /// The text of the next time round, with its pieces' origins, or `None`
     /// once the body has run `count` times.
-    pub(super) fn next_time(&mut self) -> Option<ExpansionBuilder> {
+    pub(super) fn next_time(&mut self) -> Option<Made> {
         if self.next >= self.count || self.body.is_empty() {
             return None;
         }
         let number = self.next.to_string();
         self.next += 1;
         let call_site = self.site;
-        let mut builder = ExpansionBuilder::new();
+        let mut builder = Made::new();
         for (token, text) in self.body.iter().flat_map(|(line, text)| {
             line.syntax()
                 .descendants()
@@ -75,13 +77,14 @@ impl Repeat {
             if token.kind() == kinds::IDENT && self.counter.as_deref() == Some(token.text()) {
                 builder.push(
                     &number,
+                    kinds::NUMBER,
                     Origin::Synthesised {
                         inputs: from,
                         call_site,
                     },
                 );
             } else {
-                builder.push(token.text(), Origin::Expanded { from, call_site });
+                builder.token(&token, Origin::Expanded { from, call_site });
             }
         }
         Some(builder)

@@ -37,17 +37,19 @@
 use std::collections::HashMap;
 
 use lang198x_syntax::{
-    Diagnostic, DiagnosticKind, ExpansionBuilder, FileId, Origin, Provenance, Span, SyntaxElement,
-    SyntaxKind, SyntaxToken, TextId, TextRange, TextSize,
+    Diagnostic, DiagnosticKind, FileId, Origin, Provenance, Span, SyntaxElement, SyntaxKind,
+    SyntaxToken, TextId, TextRange, TextSize,
 };
 
 use super::conditional::{Conditionals, Misfit};
 use super::defines::{self, Define, Piece, Problem};
 use super::functions;
 use super::macros::{self, Macro};
+use super::made::Made;
 use super::repeats::{self, Repeat};
 use crate::ast::{Command, Expr, Line, MacroCall, NameRef, SourceFile, Statement, View};
-use crate::{Context, Cpu, Mode, ParseError, Profile, kinds, lex, parse_with};
+use crate::parser::parse_prepared;
+use crate::{Context, Cpu, Mode, ParseError, Profile, Token, kinds, lex, parse_with};
 
 /// Bounds on how much work expansion may do, so a program that never ends
 /// stops with a diagnostic instead.
@@ -340,7 +342,7 @@ impl Expander {
             finished: false,
             diagnostics: Vec::new(),
         };
-        let source = expander.load(TextId::File(FileId::new(0)), text, None, true)?;
+        let source = expander.load(TextId::File(FileId::new(0)), text, None, None, true)?;
         expander.sources.push(source);
         Ok(expander)
     }
@@ -406,21 +408,31 @@ impl Expander {
     /// Parses `text` as a source. A file's lexer problems are reported now,
     /// for every line; a macro call's text is made of tokens already read,
     /// so it has none of its own.
+    /// Parses `text`, from `tokens` if it is an expansion, which are not
+    /// lexed again. `lexical` reports the lexer's problems now, for a file.
     fn load(
         &mut self,
         id: TextId,
         text: &str,
+        tokens: Option<Vec<Token>>,
         call_depth: Option<usize>,
         lexical: bool,
     ) -> Result<Source, ParseError> {
-        let parse = parse_with(text, self.profile, &mut Defined(&self.macros))?;
+        let parse = match tokens {
+            Some(tokens) => parse_prepared(text, tokens, self.profile, &mut Defined(&self.macros))?,
+            None => parse_with(text, self.profile, &mut Defined(&self.macros))?,
+        };
         let lines: Vec<Line> = SourceFile::cast(parse.tree().root())
             .map(|file| file.lines().collect())
             .unwrap_or_default();
-        let lexed = lex(text, self.mode);
+        let lexed = if lexical {
+            lex(text, self.mode).diagnostics().to_vec()
+        } else {
+            Vec::new()
+        };
         let mut line_problems = vec![Vec::new(); lines.len()];
         for diagnostic in parse.diagnostics() {
-            if lexed.diagnostics().contains(diagnostic) {
+            if lexed.contains(diagnostic) {
                 if lexical {
                     self.diagnostics.push((id, diagnostic.clone()));
                 }
@@ -595,7 +607,7 @@ impl Expander {
         let id = FileId::new(number);
         self.files.push(IncludedFile { id, name, site });
         self.line_starts.push(super::locate::line_starts(&loaded));
-        match self.load(TextId::File(id), &loaded, None, true) {
+        match self.load(TextId::File(id), &loaded, None, None, true) {
             Ok(source) => self.sources.push(source),
             Err(_) => self.report(text, site.range(), "the included file is too long to read"),
         }
@@ -739,9 +751,15 @@ impl Expander {
         if !guessed && !stale {
             return (line, problems, text);
         }
-        let mut builder = ExpansionBuilder::new();
-        let from = Span::new(text, line.syntax().text_range());
-        builder.push(line.syntax().text(), self.copied(from));
+        let mut builder = Made::new();
+        for token in line
+            .syntax()
+            .descendants()
+            .filter_map(SyntaxElement::into_token)
+        {
+            let from = Span::new(text, token.text_range());
+            builder.token(&token, self.copied(from));
+        }
         let Some((id, source)) = self.add_text(builder, None) else {
             return (line, problems, text);
         };
@@ -752,16 +770,14 @@ impl Expander {
         (reparsed, problems, id)
     }
 
-    /// Adds an expansion's text to the provenance and parses it.
-    fn add_text(
-        &mut self,
-        builder: ExpansionBuilder,
-        call_depth: Option<usize>,
-    ) -> Option<(TextId, Source)> {
+    /// Adds an expansion's text to the provenance and parses it from the
+    /// tokens it was made of.
+    fn add_text(&mut self, made: Made, call_depth: Option<usize>) -> Option<(TextId, Source)> {
+        let (builder, tokens) = made.finish();
         let expansion = builder.finish().ok()?;
         let text = expansion.text().to_owned();
         let id = TextId::Expansion(self.provenance.add(expansion).ok()?);
-        let source = self.load(id, &text, call_depth, false).ok()?;
+        let source = self.load(id, &text, Some(tokens), call_depth, false).ok()?;
         Some((id, source))
     }
 
@@ -856,9 +872,9 @@ impl Expander {
                 return None;
             }
         };
-        let mut builder = ExpansionBuilder::new();
+        let mut builder = Made::new();
         for piece in &pieces {
-            builder.push(&piece.text, piece.origin);
+            builder.piece(piece);
         }
         self.expanded_bytes += pieces.iter().map(|p| p.text.len()).sum::<usize>();
         let Some((id, source)) = self.add_text(builder, None) else {
@@ -899,8 +915,7 @@ impl Expander {
         if !functions::any(&pieces) {
             return Some((line, problems, text));
         }
-        let mode = self.mode;
-        let result = functions::run(pieces, mode, &mut |pieces, site| {
+        let result = functions::run(pieces, &mut |pieces, site| {
             self.constant(pieces, site, host)
         });
         let pieces = match result {
@@ -910,9 +925,9 @@ impl Expander {
                 return None;
             }
         };
-        let mut builder = ExpansionBuilder::new();
+        let mut builder = Made::new();
         for piece in &pieces {
-            builder.push(&piece.text, piece.origin);
+            builder.piece(piece);
         }
         let Some((id, source)) = self.add_text(builder, None) else {
             self.report(
@@ -939,12 +954,13 @@ impl Expander {
             inputs: site,
             call_site: site,
         };
-        let mut builder = ExpansionBuilder::new();
-        builder.push(".byte ", made);
+        let mut builder = Made::new();
+        builder.push(".byte", kinds::CONTROL, made);
+        builder.push(" ", SyntaxKind::WHITESPACE, made);
         for piece in pieces {
-            builder.push(&piece.text, piece.origin);
+            builder.piece(piece);
         }
-        builder.push("\n", made);
+        builder.push("\n", SyntaxKind::NEWLINE, made);
         let expected = || Problem::invalid(site, "expected a constant value".to_owned());
         let (_, source) = self.add_text(builder, None).ok_or_else(expected)?;
         let line = source.lines.first().ok_or_else(expected)?;

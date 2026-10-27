@@ -45,7 +45,8 @@ use lang198x_syntax::{
     TextSize, TreeBuilder,
 };
 
-use crate::{Lexer, Mode, Profile, kinds};
+use crate::lexer::{Prepared, TokenSource};
+use crate::{Lexer, Mode, Profile, Token, kinds};
 
 mod commands;
 mod expression;
@@ -155,9 +156,34 @@ pub fn parse_with(
     profile: Profile,
     context: &mut dyn Context,
 ) -> Result<Parse, ParseError> {
+    parse_from(text, Box::new(Lexer::new(text)), profile, context)
+}
+
+/// Parses `text` from `tokens`, which cover it exactly and are not lexed
+/// again: the text an expansion was made of.
+pub(crate) fn parse_prepared(
+    text: &str,
+    tokens: Vec<Token>,
+    profile: Profile,
+    context: &mut dyn Context,
+) -> Result<Parse, ParseError> {
+    parse_from(
+        text,
+        Box::new(Prepared(tokens.into_iter())),
+        profile,
+        context,
+    )
+}
+
+fn parse_from<'t>(
+    text: &'t str,
+    lexer: Box<dyn TokenSource + 't>,
+    profile: Profile,
+    context: &mut dyn Context,
+) -> Result<Parse, ParseError> {
     let mut parser = Parser {
         text,
-        lexer: Lexer::new(text),
+        lexer,
         mode: Mode::of(profile),
         next_start: 0,
         kinds: Vec::new(),
@@ -212,7 +238,7 @@ enum Macro {
 
 struct Parser<'t, 'c> {
     text: &'t str,
-    lexer: Lexer<'t>,
+    lexer: Box<dyn TokenSource + 't>,
     /// The mode the next line is read in.
     mode: Mode,
     /// Where the next token from the lexer starts.
