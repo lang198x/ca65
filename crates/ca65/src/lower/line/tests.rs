@@ -290,6 +290,68 @@ const MEASURED: &[(&str, Option<&str>)] = &[
         ".word entry\nentry: .macro emit\nnop\n.endmacro\nemit\n",
         Some("0200ea"),
     ),
+    // Settings that make no bytes, checked as ca65 checks them, and the
+    // constructor tables, which export their name.
+    (".setcpu \"6502\"\nnop\n", Some("ea")),
+    (".setcpu \"6502\"\n.p02\nnop\n", Some("ea")),
+    (".setcpu \"nope\"\n", None),
+    (".setcpu 1\n", None),
+    (".setcpu\n", None),
+    (
+        ".smart\n.smart +\n.smart -\n.smart on\n.smart OFF\nnop\n",
+        Some("ea"),
+    ),
+    (".smart 1\n", None),
+    (
+        ".autoimport on\n.autoimport off\n.autoimport\nnop\n",
+        Some("ea"),
+    ),
+    (".autoimport 1\n", None),
+    (
+        ".list\n.list +\n.list -\n.list ON\n.list Off\nnop\n",
+        Some("ea"),
+    ),
+    (".list 1\n", None),
+    (".debuginfo on\n.debuginfo +\nnop\n", Some("ea")),
+    (".debuginfo 1\n", None),
+    (
+        ".listbytes 4\n.listbytes 255\n.listbytes unlimited\nnop\n",
+        Some("ea"),
+    ),
+    (".listbytes 3\n", None),
+    (".listbytes 256\n", None),
+    (".listbytes UNLIMITED\n", None),
+    (".listbytes fwd\nfwd=10\n", None),
+    (
+        ".pagelen 32\n.pagelength 127\n.pagelength unlimited\nnop\n",
+        Some("ea"),
+    ),
+    (".pagelen 31\n", None),
+    (".pagelen 128\n", None),
+    (
+        ".fileopt author, \"x\"\n.fopt Compiler, \"y\"\n.fileopt 3, \"z\"\nnop\n",
+        Some("ea"),
+    ),
+    (".fileopt bogus, \"x\"\n", None),
+    (".fileopt comment, 1\n", None),
+    (".fileopt comment\n", None),
+    (".fopt author, \"a\", \"b\"\n", None),
+    (".fileopt 256, \"x\"\n", None),
+    (".pushcpu\n.pushcpu\n.popcpu\n.popcpu\nnop\n", Some("ea")),
+    (".condes init, 0\ninit: rts\n", Some("60")),
+    (".condes init, 6, 1\ninit: rts\n", Some("60")),
+    (".condes init, Constructor\ninit: rts\n", Some("60")),
+    (
+        ".constructor init\n.destructor done, 32\n.interruptor irq\ninit:\ndone:\nirq: rts\n",
+        Some("60"),
+    ),
+    (".condes init, 7\ninit: rts\n", None),
+    (".condes init, -1\ninit: rts\n", None),
+    (".condes init, user\ninit: rts\n", None),
+    (".condes init, 0, 33\ninit: rts\n", None),
+    (".condes init, 0, 0\ninit: rts\n", None),
+    (".constructor init, 0\ninit: rts\n", None),
+    (".condes init, 0, prio\nprio=3\ninit: rts\n", None),
     // `.reloc` ends `.org`: addresses count from the segment again.
     ("nop\n.reloc\nnop\n", Some("eaea")),
     (
@@ -687,4 +749,59 @@ fn what_is_not_lowered_yet_says_so() {
             .unwrap_or_else(|| panic!("{source:?} lowers"));
         assert_eq!(problem.kind(), DiagnosticKind::Unsupported, "{source:?}");
     }
+}
+
+/// The first line of `source`, lowered.
+fn first(source: &str) -> Result<super::Lowered, lang198x_syntax::Diagnostic> {
+    let profile = Profile::CA65_2_19_6502;
+    let mut expander = Expander::new(source, profile).expect("parses");
+    let mut mini = Mini::default();
+    let active = expander.next_line(&mut mini).expect("a line");
+    line(&active, profile, &mini)
+}
+
+#[test]
+fn settings_report_the_cpu_stack_and_constructors_export() {
+    use crate::lower::CpuStack;
+    assert_eq!(
+        first(".pushcpu\n").ok().and_then(|l| l.cpu),
+        Some(CpuStack::Push)
+    );
+    assert_eq!(
+        first(".POPCPU\n").ok().and_then(|l| l.cpu),
+        Some(CpuStack::Pop)
+    );
+    assert_eq!(first(".p02\n").ok().and_then(|l| l.cpu), None);
+    let exported = |source: &str| {
+        first(source)
+            .ok()
+            .and_then(|l| l.visibility)
+            .map(|v| (v.kind, v.names))
+    };
+    let init = vec![Declared {
+        name: "init".to_owned(),
+        size: None,
+    }];
+    assert_eq!(
+        exported(".condes init, 0\n"),
+        Some((Visible::Export, init.clone()))
+    );
+    assert_eq!(
+        exported(".constructor init, 5\n"),
+        Some((Visible::Export, init))
+    );
+    assert!(first(".condes s::init, 0\n").is_err());
+
+    // Another CPU is not lowered yet, which is not the same as refused.
+    for source in [
+        ".setcpu \"65C02\"\n",
+        ".setcpu \"huc6280\"\n",
+        ".pc02\n",
+        ".p816\n",
+    ] {
+        let problem = first(source).err().expect(source);
+        assert_eq!(problem.kind(), DiagnosticKind::Unsupported, "{source}");
+    }
+    let problem = first(".setcpu \"nope\"\n").err().expect("unknown");
+    assert_eq!(problem.kind(), DiagnosticKind::Invalid);
 }
