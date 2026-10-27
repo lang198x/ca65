@@ -25,12 +25,44 @@ pub struct Item {
     pub op: Option<Operation>,
 }
 
-/// A lowered line: its statements, in order.
+/// A lowered line: its statements, in order, and any change it makes to
+/// the scopes names live in.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct Lowered {
     /// The statements. An unnamed label before a named one makes two.
     pub items: Vec<Item>,
+    /// The change the line makes to the scopes, made after its statements.
+    pub scope: Option<Scope>,
+}
+
+/// A change to the scopes names live in, from `.scope`, `.proc`,
+/// `.endscope` or `.endproc`.
+///
+/// Lowering only reports these: the names in a line's statements are left
+/// as written. The assembler keeps the scopes, because ca65 ties them to its
+/// symbols.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Scope {
+    /// `.scope` or `.proc`: a scope opens, with a name or without one. A
+    /// `.proc` with a name also defines that name at the address, in the
+    /// scope around the new one, as a label among the line's items. ca65
+    /// warns that a `.proc` without a name is deprecated, and opens an
+    /// unnamed `.scope`, which `.endscope` closes.
+    Open {
+        /// The scope's name, if it has one.
+        name: Option<String>,
+        /// Whether `.proc` opened it, so only `.endproc` closes it.
+        procedure: bool,
+    },
+    /// `.endscope` or `.endproc`: the innermost scope closes. The command
+    /// must match the one that opened it. A label on the line belongs to
+    /// the scope that closes.
+    Close {
+        /// Whether this is `.endproc`.
+        procedure: bool,
+    },
 }
 
 /// Lowers `line` as ca65 V2.19 assembles it under `profile`.
@@ -54,6 +86,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
     if let Some(name) = syntax.label().and_then(|l| l.name()) {
         labels.push(name.text());
     }
+    let mut scope = None;
     let op = if line.label_only() {
         None
     } else {
@@ -70,7 +103,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
                 let value = assignment
                     .value()
                     .ok_or_else(|| invalid(range, "expected a value"))?;
-                let value = expr::expression(&value)?;
+                let value = expr::expression(&value, known)?;
                 let op = assignment.op().map(|t| t.text().to_ascii_lowercase());
                 labels.push(name.text());
                 Some(if op.as_deref() == Some(".set") {
@@ -79,7 +112,20 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
                     Operation::Equ(value)
                 })
             }
-            Some(Statement::Command(command)) => command_op(&command, known)?,
+            Some(Statement::Command(command)) => match scope_change(&command)? {
+                Some(change) => {
+                    if let Scope::Open {
+                        name: Some(name),
+                        procedure: true,
+                    } = &change
+                    {
+                        labels.push(name.clone());
+                    }
+                    scope = Some(change);
+                    None
+                }
+                None => command_op(&command, known)?,
+            },
             Some(_) => {
                 return Err(unsupported(
                     syntax.syntax().text_range(),
@@ -103,7 +149,33 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
         }),
         (None, None) => {}
     }
-    Ok(Lowered { items })
+    Ok(Lowered { items, scope })
+}
+
+/// The change to the scopes a command makes, if it is `.scope`, `.proc`,
+/// `.endscope` or `.endproc`. The parser refuses a label before `.scope` or
+/// `.proc`, as ca65 does.
+fn scope_change(command: &Command) -> Result<Option<Scope>, Diagnostic> {
+    let range = command.syntax().text_range();
+    let word = command
+        .word()
+        .map(|w| w.text().to_ascii_lowercase())
+        .unwrap_or_default();
+    let procedure = word == ".proc" || word == ".endproc";
+    match word.as_str() {
+        ".scope" | ".proc" => {
+            if command.address_size().is_some() {
+                return Err(unsupported(range, &format!("an address size on `{word}`")));
+            }
+            let name = command.name().map(|name| name.text());
+            Ok(Some(Scope::Open {
+                procedure: procedure && name.is_some(),
+                name,
+            }))
+        }
+        ".endscope" | ".endproc" => Ok(Some(Scope::Close { procedure })),
+        _ => Ok(None),
+    }
 }
 
 /// The operation a control command lowers to.
@@ -129,7 +201,7 @@ fn command_op(command: &Command, known: &dyn Known) -> Result<Option<Operation>,
     let lowered = |values: Vec<Expr>| {
         values
             .iter()
-            .map(expr::expression)
+            .map(|value| expr::expression(value, known))
             .collect::<Result<Vec<_>, _>>()
     };
     let at_least_one = |values: Vec<Expr>| {
@@ -140,9 +212,9 @@ fn command_op(command: &Command, known: &dyn Known) -> Result<Option<Operation>,
         }
     };
     Ok(Some(match word.as_str() {
-        ".byte" | ".byt" => sized(1, false, bytes(at_least_one(values())?)?),
+        ".byte" | ".byt" => sized(1, false, bytes(at_least_one(values())?, known)?),
         ".asciiz" => {
-            let mut values = bytes(values())?;
+            let mut values = bytes(values(), known)?;
             values.push(Ir::Num(0));
             sized(1, false, values)
         }
@@ -185,7 +257,7 @@ fn command_op(command: &Command, known: &dyn Known) -> Result<Option<Operation>,
         ".org" => {
             let [value] = <[Expr; 1]>::try_from(values())
                 .map_err(|_| invalid(range, "`.org` takes one value"))?;
-            Operation::Org(expr::expression(&value)?)
+            Operation::Org(expr::expression(&value, known)?)
         }
         other => return Err(unsupported(range, &format!("`{other}`"))),
     }))
@@ -210,12 +282,12 @@ fn at_offset(value: Ir, offset: i64) -> Ir {
 }
 
 /// The values of `.byte` and its kin: a string gives each of its bytes.
-fn bytes(values: Vec<Expr>) -> Result<Vec<Ir>, Diagnostic> {
+fn bytes(values: Vec<Expr>, known: &dyn Known) -> Result<Vec<Ir>, Diagnostic> {
     let mut out = Vec::new();
     for value in values {
         match string(&value) {
             Some(text) => out.extend(text.bytes().map(|b| Ir::Num(i64::from(b)))),
-            None => out.push(expr::expression(&value)?),
+            None => out.push(expr::expression(&value, known)?),
         }
     }
     Ok(out)
@@ -241,7 +313,7 @@ fn count_and_fill(
     let range = command.syntax().text_range();
     let values: Vec<Expr> = command.values().collect();
     let now = |value: &Expr| -> Result<i64, Diagnostic> {
-        let lowered = expr::expression(value)?;
+        let lowered = expr::expression(value, known)?;
         expr::constant(&lowered, known).ok_or_else(|| {
             invalid(
                 value.syntax().text_range(),

@@ -109,7 +109,7 @@ fn choose(
     let range = operand.syntax().text_range();
     let lowered = |e: Option<crate::ast::Expr>| -> Result<Ir, Option<Diagnostic>> {
         let e = e.ok_or_else(|| invalid(range, "expected a value"))?;
-        expr::expression(&e).map_err(Some)
+        expr::expression(&e, known).map_err(Some)
     };
     if operand.accumulator().is_some() {
         return Ok(("accumulator", None));

@@ -9,16 +9,29 @@ use crate::ast::{CallExpr, Expr, View};
 use crate::kinds;
 
 /// Lowers `expr` to an IR expression with the value ca65 gives it. Names stay
-/// names, as written.
+/// names, as written. `known` answers what ca65 needs now: the size of a
+/// name in `.sizeof`.
 ///
 /// ```
 /// use lang198x_ca65::ast::{SourceFile, Statement, View};
+/// use lang198x_ca65::lower::{Known, Value};
 /// use lang198x_ca65::{Profile, lower, parse};
+///
+/// struct Nothing;
+///
+/// impl Known for Nothing {
+///     fn name(&self, _: &str) -> Value {
+///         Value::Unknown
+///     }
+///     fn pc(&self) -> Value {
+///         Value::Unknown
+///     }
+/// }
 ///
 /// let parse = parse(".byte <(table + 2)\n", Profile::CA65_2_19_6502)?;
 /// let line = SourceFile::cast(parse.tree().root()).unwrap().lines().next().unwrap();
 /// let Some(Statement::Command(command)) = line.statement() else { panic!() };
-/// let value = lower::expression(&command.values().next().unwrap()).expect("lowers");
+/// let value = lower::expression(&command.values().next().unwrap(), &Nothing).expect("lowers");
 /// let symbols = |name: &str| (name == "table").then_some(0x12FF);
 /// assert_eq!(value.eval_with(&symbols, None, 0).ok(), Some(0x01));
 /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -29,11 +42,11 @@ use crate::kinds;
 /// A diagnostic, with its range in `expr`'s tree, for a part ca65 refuses,
 /// or one not lowered yet, which is
 /// [`Unsupported`](DiagnosticKind::Unsupported).
-pub fn expression(expr: &Expr) -> Result<Ir, Diagnostic> {
-    lower(expr)
+pub fn expression(expr: &Expr, known: &dyn Known) -> Result<Ir, Diagnostic> {
+    lower(expr, known)
 }
 
-fn lower(expr: &Expr) -> Result<Ir, Diagnostic> {
+fn lower(expr: &Expr, known: &dyn Known) -> Result<Ir, Diagnostic> {
     let range = expr.syntax().text_range();
     let missing = || invalid(range, "expected a value");
     Ok(match expr {
@@ -48,9 +61,9 @@ fn lower(expr: &Expr) -> Result<Ir, Diagnostic> {
                 .map(|t| t.text().to_owned())
                 .ok_or_else(missing)?,
         ),
-        Expr::Paren(paren) => lower(&paren.expr().ok_or_else(missing)?)?,
+        Expr::Paren(paren) => lower(&paren.expr().ok_or_else(missing)?, known)?,
         Expr::Unary(unary) => {
-            let operand = Box::new(lower(&unary.operand().ok_or_else(missing)?)?);
+            let operand = Box::new(lower(&unary.operand().ok_or_else(missing)?, known)?);
             let op = unary
                 .op()
                 .map(|t| t.text().to_ascii_lowercase())
@@ -67,8 +80,8 @@ fn lower(expr: &Expr) -> Result<Ir, Diagnostic> {
             }
         }
         Expr::Binary(binary) => {
-            let lhs = Box::new(lower(&binary.lhs().ok_or_else(missing)?)?);
-            let rhs = Box::new(lower(&binary.rhs().ok_or_else(missing)?)?);
+            let lhs = Box::new(lower(&binary.lhs().ok_or_else(missing)?, known)?);
+            let rhs = Box::new(lower(&binary.rhs().ok_or_else(missing)?, known)?);
             let text = binary
                 .op()
                 .map(|t| t.text().to_ascii_lowercase())
@@ -97,17 +110,21 @@ fn lower(expr: &Expr) -> Result<Ir, Diagnostic> {
             };
             Ir::Bin(op, lhs, rhs)
         }
-        Expr::Call(call) => function(call, range)?,
+        Expr::Call(call) => function(call, range, known)?,
     })
 }
 
-/// A function: those that only compute a value. Those that ask about the
-/// program, such as `.defined` or `.sizeof`, are not lowered yet.
-fn function(call: &CallExpr, range: TextRange) -> Result<Ir, Diagnostic> {
+/// A function: those that only compute a value, and `.sizeof`, which ca65
+/// needs to know now. Those that ask other things about the program, such as
+/// `.defined`, are not lowered yet.
+fn function(call: &CallExpr, range: TextRange, known: &dyn Known) -> Result<Ir, Diagnostic> {
     let name = call
         .function()
         .map(|t| t.text().to_ascii_lowercase())
         .unwrap_or_default();
+    if name == ".sizeof" {
+        return size_of(call, range, known);
+    }
     const LOWERED: &[&str] = &[
         ".lobyte",
         ".hibyte",
@@ -125,7 +142,7 @@ fn function(call: &CallExpr, range: TextRange) -> Result<Ir, Diagnostic> {
         .map(|arg| {
             arg.expr()
                 .ok_or_else(|| invalid(arg.syntax().text_range(), "expected a value"))
-                .and_then(|e| lower(&e))
+                .and_then(|e| lower(&e, known))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let wrong = |count: &str| invalid(range, &format!("`{name}` takes {count}"));
@@ -157,6 +174,20 @@ fn function(call: &CallExpr, range: TextRange) -> Result<Ir, Diagnostic> {
             Ir::Bin(BinOp::Min, a, b)
         }
     })
+}
+
+/// `.sizeof(name)`: the bytes a label's line made, or a scope's bytes. ca65
+/// needs the size now, so a name further on has none.
+fn size_of(call: &CallExpr, range: TextRange, known: &dyn Known) -> Result<Ir, Diagnostic> {
+    let mut args = call.args();
+    let name = match (args.next().and_then(|arg| arg.expr()), args.next()) {
+        (Some(Expr::Name(name)), None) => name.text(),
+        _ => return Err(invalid(range, "`.sizeof` takes a name")),
+    };
+    known
+        .size_of(&name)
+        .map(Ir::Num)
+        .ok_or_else(|| invalid(range, &format!("the size of `{name}` is unknown")))
 }
 
 /// A number, a character or `*`.

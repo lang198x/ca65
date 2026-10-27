@@ -17,7 +17,7 @@ mod line;
 
 pub use expr::expression;
 pub use instruction::instruction;
-pub use line::{Item, Lowered, line};
+pub use line::{Item, Lowered, Scope, line};
 
 /// The address sizes ca65 gives a value: how many bytes an address needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -66,4 +66,26 @@ pub trait Known {
 
     /// What is known of the address of the line, `*`.
     fn pc(&self) -> Value;
+
+    /// The size of `name`, as written, for `.sizeof`: the bytes a label's
+    /// line made, or the bytes of a closed scope. A scope of that name comes
+    /// before a symbol. `None`, the default, if it has no size yet.
+    fn size_of(&self, name: &str) -> Option<i64> {
+        let _ = name;
+        None
+    }
+}
+
+/// What is known of `expr` now: its value if every name in it is a
+/// constant, and otherwise the address size ca65 gives it. Each name takes
+/// its own size, a name not known yet is absolute, and `<`, `>` and `^`
+/// make one byte.
+///
+/// An assembler can use this for the value of `name = expr`.
+#[must_use]
+pub fn value(expr: &asm198x_ir::Expr, known: &dyn Known) -> Value {
+    match expr::constant(expr, known) {
+        Some(value) => Value::Constant(value),
+        None => Value::Address(expr::size(expr, known)),
+    }
 }

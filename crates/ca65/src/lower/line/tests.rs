@@ -12,7 +12,7 @@ use super::line;
 use crate::Profile;
 use crate::ast::{Expr, NameRef};
 use crate::expand::{Expander, Host};
-use crate::lower::{self, Known, Size, Value};
+use crate::lower::{self, Known, Scope, Size, Value};
 
 /// The assembler: what each name is known as so far, and the final values
 /// from the pass before.
@@ -20,6 +20,8 @@ use crate::lower::{self, Known, Size, Value};
 struct Mini {
     known: HashMap<String, Value>,
     finals: HashMap<String, i64>,
+    /// The bytes each label's line made.
+    sizes: HashMap<String, i64>,
     pc: i64,
     org: bool,
 }
@@ -46,11 +48,15 @@ impl Known for Mini {
             Value::Address(Size::Absolute)
         }
     }
+
+    fn size_of(&self, name: &str) -> Option<i64> {
+        self.sizes.get(name).copied()
+    }
 }
 
 impl Host for Mini {
     fn evaluate(&mut self, expr: &Expr) -> Result<i64, String> {
-        let lowered = lower::expression(expr).map_err(|d| d.message().to_owned())?;
+        let lowered = lower::expression(expr, &*self).map_err(|d| d.message().to_owned())?;
         self.value(&lowered).ok_or_else(|| "not known".to_owned())
     }
 
@@ -79,6 +85,8 @@ fn pass(source: &str, finals: HashMap<String, i64>) -> Result<(Vec<u8>, Mini), S
     let mut bytes = Vec::new();
     while let Some(active) = expander.next_line(&mut mini) {
         let lowered = line(&active, profile, &mini).map_err(|d| d.message().to_owned())?;
+        let before = bytes.len();
+        let mut labels = Vec::new();
         for item in lowered.items {
             if let Some(label) = item.label {
                 let value = match &item.op {
@@ -95,10 +103,17 @@ fn pass(source: &str, finals: HashMap<String, i64>) -> Result<(Vec<u8>, Mini), S
                     _ => mini.pc,
                 };
                 mini.known.insert(label.clone(), value);
+                if !matches!(item.op, Some(Operation::Equ(_) | Operation::Set(_))) {
+                    labels.push(label.clone());
+                }
                 mini.finals.entry(label).or_insert(fin);
             }
             let Some(op) = item.op else { continue };
             emit(&op, &mut mini, &mut bytes)?;
+        }
+        let made = i64::try_from(bytes.len() - before).unwrap_or(i64::MAX);
+        for label in labels {
+            mini.sizes.insert(label, made);
         }
     }
     if let Some((_, problem)) = expander.diagnostics().first() {
@@ -229,6 +244,16 @@ const MEASURED: &[(&str, Option<&str>)] = &[
     (".org $10\nol: nop\nlda ol\n", Some("eaa510")),
     ("bne *\nbne lab\nlab:\n", Some("d0fed000")),
     ("q = 1000\nq2 = q - 990\nlda q2\n", Some("a50a")),
+    // `.sizeof` a label: the bytes its line made, known now.
+    ("a1: .byte 1,2,3\n.byte .sizeof(a1)\n", Some("01020303")),
+    ("a1:\n.byte 1,2,3\n.byte .sizeof(a1)\n", Some("01020300")),
+    ("a1: nop\nlda #1\n.byte .sizeof(a1)\n", Some("eaa90101")),
+    ("a1: .res 3\n.byte .sizeof(a1)\n", Some("00000003")),
+    (".byte .sizeof(a1)\na1: .word 1,2\n", None),
+    ("v=5\n.byte .sizeof(v)\n", None),
+    (".byte .sizeof(nosuch)\n", None),
+    (".byte .sizeof(*)\n", None),
+    ("a1: .byte 1\n.byte .SIZEOF(a1)\n", Some("0101")),
 ];
 
 #[test]
@@ -271,6 +296,70 @@ fn labels_are_items_of_their_own_or_carry_the_operation() {
     );
 }
 
+/// A line's items, as `items` gives them, and its change to the scopes.
+type Reported = (Vec<(Option<String>, bool)>, Option<Scope>);
+
+/// The change to the scopes `source`'s first line makes, and its items.
+fn scope(source: &str) -> Result<Reported, String> {
+    let profile = Profile::CA65_2_19_6502;
+    let mut expander = Expander::new(source, profile).expect("parses");
+    let mut mini = Mini::default();
+    let active = expander.next_line(&mut mini).expect("a line");
+    let lowered = line(&active, profile, &mini).map_err(|d| d.message().to_owned())?;
+    let items = lowered
+        .items
+        .into_iter()
+        .map(|item| (item.label, item.op.is_some()))
+        .collect();
+    Ok((items, lowered.scope))
+}
+
+#[test]
+fn scope_commands_are_reported_after_the_lines_items() {
+    let open = |name: Option<&str>, procedure| Scope::Open {
+        name: name.map(str::to_owned),
+        procedure,
+    };
+    let label = |n: &str| (Some(n.to_owned()), false);
+    assert_eq!(
+        scope(".scope inner\n"),
+        Ok((vec![], Some(open(Some("inner"), false))))
+    );
+    assert_eq!(scope(".SCOPE\n"), Ok((vec![], Some(open(None, false)))));
+    // `.proc` also defines its name, in the scope around it.
+    assert_eq!(
+        scope(".proc main\n"),
+        Ok((vec![label("main")], Some(open(Some("main"), true))))
+    );
+    // An unnamed `.proc` is an unnamed `.scope`.
+    assert_eq!(scope(".proc\n"), Ok((vec![], Some(open(None, false)))));
+    // ca65 takes an unnamed label before either.
+    assert_eq!(
+        scope(": .proc p\n"),
+        Ok((vec![label(":"), label("p")], Some(open(Some("p"), true))))
+    );
+    // A label on the closing line belongs to the scope that closes.
+    assert_eq!(
+        scope("tail: .endscope\n"),
+        Ok((vec![label("tail")], Some(Scope::Close { procedure: false })))
+    );
+    assert_eq!(
+        scope(".endproc\n"),
+        Ok((vec![], Some(Scope::Close { procedure: true })))
+    );
+    assert_eq!(scope("nop\n"), Ok((vec![(None, true)], None)));
+}
+
+#[test]
+fn ca65_refuses_a_label_before_a_scope() {
+    let profile = Profile::CA65_2_19_6502;
+    for source in ["x: .scope s\n", "x: .proc p\n"] {
+        let mut expander = Expander::new(source, profile).expect("parses");
+        let _ = expander.next_line(&mut Mini::default());
+        assert!(!expander.diagnostics().is_empty(), "{source:?}");
+    }
+}
+
 #[test]
 fn what_is_not_lowered_yet_says_so() {
     let profile = Profile::CA65_2_19_6502;
@@ -278,6 +367,7 @@ fn what_is_not_lowered_yet_says_so() {
         ".segment \"CODE\"\n",
         ".byte .strlen(\"ab\")\n",
         ".struct s\n",
+        ".proc p: far\n",
     ] {
         let mut expander = Expander::new(source, profile).expect("parses");
         let mut mini = Mini::default();
