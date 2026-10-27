@@ -13,7 +13,9 @@ use super::line;
 use crate::Profile;
 use crate::ast::{Expr, NameRef};
 use crate::expand::{Expander, Host};
-use crate::lower::{self, Declared, Known, Scope, Segment, Size, Value, Visibility, Visible};
+use crate::lower::{
+    self, Binary, Declared, Known, Scope, Segment, Size, Value, Visibility, Visible,
+};
 
 /// The assembler: what each name is known as so far, and the final values
 /// from the pass before.
@@ -567,6 +569,65 @@ fn declarations_are_reported() {
         ".import ::v\n",
     ] {
         assert!(declared(refused).is_err(), "{refused:?}");
+    }
+}
+
+/// What `source` asks to put here from a file, at its first `.incbin`.
+/// Lines before it only define names.
+fn binary(source: &str) -> Result<Option<Binary>, String> {
+    let profile = Profile::CA65_2_19_6502;
+    let mut expander = Expander::new(source, profile).expect("parses");
+    let mut mini = Mini::default();
+    while let Some(active) = expander.next_line(&mut mini) {
+        let lowered = line(&active, profile, &mini).map_err(|d| d.message().to_owned())?;
+        if lowered.binary.is_some() {
+            return Ok(lowered.binary);
+        }
+        for item in lowered.items {
+            if let (Some(label), Some(Operation::Equ(value))) = (item.label, item.op)
+                && let Some(v) = mini.value(&value)
+            {
+                mini.known.insert(label, Value::Constant(v));
+            }
+        }
+    }
+    Ok(None)
+}
+
+#[test]
+fn a_binary_file_is_reported() {
+    let file = |name: &str, offset, size| {
+        Ok(Some(Binary {
+            name: name.to_owned(),
+            offset,
+            size,
+        }))
+    };
+    assert_eq!(binary(".incbin \"a.bin\"\n"), file("a.bin", None, None));
+    assert_eq!(
+        binary(".incbin \"a.bin\", 2\n"),
+        file("a.bin", Some(2), None)
+    );
+    assert_eq!(
+        binary(".incbin \"a.bin\", 2, -2\n"),
+        file("a.bin", Some(2), Some(-2))
+    );
+    assert_eq!(
+        binary("n=1\n.incbin \"a.bin\", n, n\n"),
+        file("a.bin", Some(1), Some(1))
+    );
+    assert_eq!(
+        binary(".incbin .concat(\"a\",\".bin\"), 7\n"),
+        file("a.bin", Some(7), None)
+    );
+    assert_eq!(binary("nop\n"), Ok(None));
+    for refused in [
+        ".incbin \"a.bin\", n\nn=1\n",
+        ".incbin \"a.bin\", 1, 1, 1\n",
+        ".incbin\n",
+        ".incbin 5\n",
+    ] {
+        assert!(binary(refused).is_err(), "{refused:?}");
     }
 }
 

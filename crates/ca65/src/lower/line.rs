@@ -39,6 +39,25 @@ pub struct Lowered {
     pub segment: Option<Segment>,
     /// The names the line shows a linker, or asks one for.
     pub visibility: Option<Visibility>,
+    /// The file whose bytes the line puts here, from `.incbin`.
+    pub binary: Option<Binary>,
+}
+
+/// The bytes of a file, put where the line is, from
+/// `.incbin "name"[, offset[, size]]`.
+///
+/// Lowering only reports the file, since the assembler reads it. ca65 needs
+/// the offset and size as soon as it reads the line. A negative size, like
+/// none, means the rest of the file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Binary {
+    /// The file's name, as written.
+    pub name: String,
+    /// Where in the file to start, if written.
+    pub offset: Option<i64>,
+    /// How many bytes to take, if written.
+    pub size: Option<i64>,
 }
 
 /// The names a line shows a linker, or asks one for, from `.import`,
@@ -164,6 +183,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
     let mut scope = None;
     let mut segment = None;
     let mut visibility = None;
+    let mut binary = None;
     let mut defined = Vec::new();
     let op = if line.label_only() {
         None
@@ -213,7 +233,13 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
                             defined = values;
                             None
                         }
-                        None => command_op(&command, line, known)?,
+                        None => match included_binary(&command, line, known)? {
+                            Some(included) => {
+                                binary = Some(included);
+                                None
+                            }
+                            None => command_op(&command, line, known)?,
+                        },
                     },
                 },
             },
@@ -246,6 +272,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
         scope,
         segment,
         visibility,
+        binary,
     })
 }
 
@@ -348,6 +375,47 @@ fn address_size(word: &str) -> Option<Size> {
         "far" | "long" => Some(Size::Far),
         _ => None,
     }
+}
+
+/// The file a command puts here, if it is `.incbin`.
+fn included_binary(
+    command: &Command,
+    line: &ActiveLine,
+    known: &dyn Known,
+) -> Result<Option<Binary>, Diagnostic> {
+    let is_incbin = command
+        .word()
+        .is_some_and(|w| w.text().eq_ignore_ascii_case(".incbin"));
+    if !is_incbin {
+        return Ok(None);
+    }
+    let range = command.syntax().text_range();
+    let values: Vec<Expr> = command.values().collect();
+    let Some((first, rest)) = values.split_first() else {
+        return Err(invalid(range, "`.incbin` takes a file name, in quotes"));
+    };
+    let name = string(first, line).ok_or_else(|| {
+        invalid(
+            first.syntax().text_range(),
+            "expected a file name, in quotes",
+        )
+    })?;
+    if rest.len() > 2 {
+        return Err(invalid(
+            range,
+            "`.incbin` takes a file name, an offset and a size",
+        ));
+    }
+    let now = |value: &Expr| -> Result<i64, Diagnostic> {
+        let lowered = expr::expression(value, known)?;
+        expr::constant(&lowered, known)
+            .ok_or_else(|| invalid(value.syntax().text_range(), "Constant expression expected"))
+    };
+    Ok(Some(Binary {
+        name: String::from_utf8_lossy(&name).into_owned(),
+        offset: rest.first().map(now).transpose()?,
+        size: rest.get(1).map(now).transpose()?,
+    }))
 }
 
 /// The names a command declares, if it is `.import`, `.export`, `.global`,
