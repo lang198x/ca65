@@ -94,6 +94,116 @@ const MEASURED: &[(&str, Want)] = &[
     (".byte .sprintf(\"%\")\n", Refused("ends partway")),
     (".byte .sprintf(\"%5\", 1)\n", Refused("ends partway")),
     (".byte .sprintf(\"ab\", 1)\n", Refused("expected `)`")),
+    // Functions whose value depends only on their tokens.
+    (
+        ".byte .strlen(\"abc\"),.strat(\"abc\",1)\n",
+        Bytes(&[3, 0x62]),
+    ),
+    (
+        ".byte .strlen(.concat(\"a\",\"bc\")),.strlen(\"\"),.strat(\"a\",0)\n",
+        Bytes(&[3, 0, 0x61]),
+    ),
+    (
+        ".byte .strlen(.sprintf(\"%c\",255)),.strat(.sprintf(\"%c\",255),0)\n",
+        Bytes(&[1, 0xFF]),
+    ),
+    ("i=1\n.byte .strat(\"abc\",i)\n", Bytes(&[0x62])),
+    (".byte .strlen(1)\n", Refused("expected a string")),
+    (".byte .strat(\"abc\",3)\n", Refused("outside the string")),
+    // ca65 V2.19 fails an internal check here.
+    (".byte .strat(\"abc\",-1)\n", Refused("outside the string")),
+    (
+        ".byte .tcount(a b c),.tcount({a,b}),.tcount()\n",
+        Bytes(&[3, 3, 0]),
+    ),
+    (".byte .tcount({{1})\n", Bytes(&[2])),
+    (".byte .tcount({{1}})\n", Refused("")),
+    (".byte .tcount((1))\n", Refused("")),
+    (".byte .tcount(a,b)\n", Bytes(&[3])),
+    (".byte .tcount({a)b})\n", Bytes(&[3])),
+    (".byte .tcount(.paramcount)\n", Bytes(&[1])),
+    (
+        ".define d 1 2\n.byte .tcount(d),.tcount({d})\n",
+        Bytes(&[2, 2]),
+    ),
+    (".byte .blank(),.blank({}),.blank(a)\n", Bytes(&[1, 1, 0])),
+    (".byte .blank({ }),.blank(,)\n", Bytes(&[1, 0])),
+    // `a` and `x` are registers, each a token of its own.
+    (
+        ".byte .match(a,b),.match(1,2),.xmatch(1,1),.xmatch(1,2),.match({a b},{c d})\n",
+        Bytes(&[0, 1, 1, 0, 0]),
+    ),
+    (
+        ".byte .match(lda, ldx),.xmatch(lda,ldx),.match(\"a\",\"b\"),.xmatch(\"a\",\"a\"),.match(1,)\n",
+        Bytes(&[1, 0, 1, 1, 0]),
+    ),
+    (
+        ".byte .match({1+2},{3+4}),.match({1+2},{3-4}),.xmatch({a},{A})\n",
+        Bytes(&[1, 0, 1]),
+    ),
+    (
+        ".byte .xmatch($10,16),.xmatch(%1,1),.xmatch(1,1.0)\n",
+        Bytes(&[1, 1, 0]),
+    ),
+    (
+        ".byte .xmatch('a',97),.xmatch('a','a'),.match('a',1),.xmatch(ab,AB),.xmatch(@c,@c),.match(@c,c)\n",
+        Bytes(&[0, 1, 0, 0, 1, 0]),
+    ),
+    (
+        ".byte .xmatch(.byte,.BYTE),.xmatch(.byt,.byte),.match(.byte,.word),.xmatch(+,+),.match(+,-)\n",
+        Bytes(&[1, 1, 0, 1, 0]),
+    ),
+    (
+        ".byte .xmatch(x,X),.match(a,x),.xmatch(\"a\",\"A\")\n",
+        Bytes(&[1, 0, 0]),
+    ),
+    (
+        ".byte .xmatch(.and,&&),.match(.and,&&),.xmatch(.bitand,&)\n",
+        Bytes(&[1, 1, 1]),
+    ),
+    (".byte .match(:+,:-),.xmatch(:+,:-)\n", Bytes(&[1, 1])),
+    (".byte .match(1 2)\n", Refused("")),
+    (
+        ".byte .definedmacro(m)\n.macro m\n.endmacro\n.byte .definedmacro(m)\n",
+        Bytes(&[0, 1]),
+    ),
+    (
+        ".macro m p,q\n.byte .definedmacro(m),.definedmacro(n)\n.endmacro\nm\n",
+        Bytes(&[1, 0]),
+    ),
+    (".macro m\n.endmacro\n.byte .definedmacro(M)\n", Bytes(&[0])),
+    (".byte .definedmacro(lda)\n", Bytes(&[0])),
+    (
+        ".byte .definedmacro(.ident(\"m\"))\n.macro m\n.endmacro\n.byte .definedmacro(.ident(\"m\"))\n",
+        Bytes(&[0, 1]),
+    ),
+    (
+        ".define d 1\n.byte .definedmacro(d)\n",
+        Refused("expected a name"),
+    ),
+    (
+        ".byte .ismnemonic(lda),.ismnem(foo),.ismnemonic(LDA),.ismnemonic(bra)\n",
+        Bytes(&[1, 0, 1, 0]),
+    ),
+    (
+        ".byte .ismnemonic(nop),.ismnemonic(bit),.ismnemonic(jmp),.ismnemonic(stz),.ismnemonic(inc)\n",
+        Bytes(&[1, 1, 1, 0, 1]),
+    ),
+    (".byte .ismnemonic(.ident(\"nop\"))\n", Bytes(&[1])),
+    (".byte .ismnemonic(1)\n", Refused("expected a name")),
+    (".byte .ismnemonic(.byte)\n", Refused("expected a name")),
+    // In a token list these functions are tokens, run only if the list's
+    // result is read again.
+    (".byte .tcount({.match({1},{2})})\n", Refused("")),
+    (".byte .tcount(.strlen(\"ab\"))\n", Refused("")),
+    (".byte .left(.strlen(\"a\"),{7 8})\n", Bytes(&[7])),
+    (".byte .left(1,{.left(.strlen(\"a\"),{7 8})})\n", Bytes(&[7])),
+    (".byte .left(1,{.strlen(\"abc\")})\n", Refused("")),
+    (".byte .tcount({.concat(\"a\",\"b\")})\n", Bytes(&[1])),
+    (
+        ".if .xmatch({.tcount(a)},{.tcount(a)})\n.byte 1\n.endif\n",
+        Bytes(&[1]),
+    ),
 ];
 
 #[test]

@@ -4,7 +4,7 @@ use asm198x_ir::{BinOp, DataRange, Expr as Ir, Operation};
 use lang198x_syntax::{Diagnostic, SyntaxToken};
 
 use super::expr::{self, invalid, unsupported};
-use super::{Known, Size, instruction};
+use super::{Known, Size, Value, instruction};
 use crate::Profile;
 use crate::ast::{Command, Expr, Statement, View};
 use crate::expand::ActiveLine;
@@ -111,9 +111,13 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
     if syntax.unnamed_label().is_some() {
         labels.push(":".to_owned());
     }
-    if let Some(name) = syntax.label().and_then(|l| l.name()) {
-        labels.push(name.text());
-    }
+    let label = syntax
+        .label()
+        .and_then(|l| l.name())
+        .map(|name| name.text());
+    labels.extend(label.clone());
+    let on_line = OnLine { known, label };
+    let known: &dyn Known = &on_line;
     let mut scope = None;
     let mut segment = None;
     let op = if line.label_only() {
@@ -189,6 +193,50 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
         scope,
         segment,
     })
+}
+
+/// What is known on a line. ca65 defines a line's label before it reads the
+/// rest, so the line can use it: in `l: lda l` under `.org $10`, `l` is on
+/// the zero page.
+struct OnLine<'a> {
+    known: &'a dyn Known,
+    label: Option<String>,
+}
+
+impl OnLine<'_> {
+    fn is_label(&self, name: &str) -> bool {
+        self.label.as_deref() == Some(name)
+    }
+}
+
+impl Known for OnLine<'_> {
+    fn name(&self, name: &str) -> Value {
+        if self.is_label(name) {
+            self.known.pc()
+        } else {
+            self.known.name(name)
+        }
+    }
+
+    fn pc(&self) -> Value {
+        self.known.pc()
+    }
+
+    fn size_of(&self, name: &str) -> Option<i64> {
+        self.known.size_of(name)
+    }
+
+    fn is_defined(&self, name: &str) -> bool {
+        self.is_label(name) || self.known.is_defined(name)
+    }
+
+    fn is_referenced(&self, name: &str) -> bool {
+        self.known.is_referenced(name)
+    }
+
+    fn read(&self, name: &str) {
+        self.known.read(name);
+    }
 }
 
 /// The change to the segment a command makes, if it is `.segment`, one of

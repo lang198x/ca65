@@ -105,6 +105,7 @@ const FUNCTIONS: &[(&str, Arguments)] = &[
     (".concat", Arguments::Mixed),
     (".const", Arguments::Values),
     (".cpu", Arguments::None),
+    (".def", Arguments::Values),
     (".defined", Arguments::Values),
     (".definedmacro", Arguments::Values),
     (".hibyte", Arguments::Values),
@@ -273,24 +274,21 @@ impl Parser<'_, '_> {
     }
 
     /// A braced list of tokens, or the tokens up to the next `,` or `)` that
-    /// is not inside parentheses.
+    /// is not inside parentheses. Braces do not nest, as in ca65: the first
+    /// `}` ends the list, so `{{1}` holds `{` and `1`.
     pub(super) fn token_list(&mut self) {
         self.builder.start_node(kinds::TOKEN_LIST);
         if self.current() == Some(kinds::L_CURLY) {
             self.bump();
-            let mut depth = 1usize;
+            let mut closed = false;
             while !self.at_line_end() {
-                match self.next_kind() {
-                    Some(kinds::L_CURLY) => depth += 1,
-                    Some(kinds::R_CURLY) => depth -= 1,
-                    _ => {}
-                }
+                closed = self.next_kind() == Some(kinds::R_CURLY);
                 self.bump_next();
-                if depth == 0 {
+                if closed {
                     break;
                 }
             }
-            if depth > 0 {
+            if !closed {
                 self.missing("expected `}`");
             }
         } else {

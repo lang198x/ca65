@@ -30,6 +30,7 @@ mod lexer;
 pub mod lower;
 #[cfg(test)]
 mod measured;
+mod number;
 mod parser;
 mod profile;
 

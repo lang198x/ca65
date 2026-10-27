@@ -1,5 +1,7 @@
 //! Token functions: `.concat`, `.ident`, `.left`, `.mid`, `.right`,
-//! `.string` and `.sprintf`.
+//! `.string` and `.sprintf`, and the functions whose value depends only on
+//! their tokens: `.strlen`, `.strat`, `.tcount`, `.blank`, `.match`,
+//! `.xmatch`, `.definedmacro` and `.ismnemonic`.
 //!
 //! This follows ca65 V2.19's `nexttok.c`. A token function runs as its line
 //! is read, and is replaced by the tokens it makes, which are read again, so
@@ -11,6 +13,14 @@
 //! evaluate. A token list runs to the first `)`, or is in braces. Every token
 //! a function makes is `Synthesised` from the whole call.
 //!
+//! In ca65 the second group are functions of an expression, not of the
+//! scanner. Each one's value comes from the tokens it reads, the macros
+//! defined so far and the CPU, none of which can change partway through a
+//! line, so it is made here as a number. The made string's bytes are here
+//! too, which the parsed line does not have. The functions that ask about
+//! symbols, such as `.defined`, depend on the names read before them on the
+//! line, so they are left to whatever lowers the line.
+//!
 //! `.mid` takes tokens from its start, however large. ca65 V2.19 instead
 //! treats a start above 100 as 0, which its manual does not say; that is
 //! not copied.
@@ -20,33 +30,58 @@ use lang198x_syntax::{Origin, Span, SyntaxKind};
 use super::defines::{Piece, Problem};
 use crate::kinds;
 
-/// The token functions, in lower case.
-const FUNCTIONS: &[&str] = &[
+/// The token functions of ca65's scanner, in lower case. They run wherever
+/// they are read, even in another function's token list.
+const SCANNER: &[&str] = &[
     ".concat", ".ident", ".left", ".mid", ".right", ".sprintf", ".string",
 ];
 
-fn is_function(piece: &Piece) -> bool {
-    piece.kind == kinds::CONTROL
-        && FUNCTIONS
-            .iter()
-            .any(|f| f.eq_ignore_ascii_case(&piece.text))
+/// The functions of an expression made here, in lower case. In a token list
+/// they are tokens, as in ca65, and run only when the list's result is read
+/// again outside one.
+const VALUES: &[&str] = &[
+    ".blank",
+    ".definedmacro",
+    ".ismnem",
+    ".ismnemonic",
+    ".match",
+    ".strat",
+    ".strlen",
+    ".tcount",
+    ".xmatch",
+];
+
+/// Whether `piece` calls a function that runs here: any of them outside a
+/// token list, and only the scanner's in one.
+fn is_function(piece: &Piece, in_list: bool) -> bool {
+    let named = |names: &[&str]| names.iter().any(|f| f.eq_ignore_ascii_case(&piece.text));
+    piece.kind == kinds::CONTROL && (named(SCANNER) || (!in_list && named(VALUES)))
 }
 
-/// Gives the value of the constant expression made of some pieces, for a
-/// call at a span.
-pub(super) type Evaluate<'e> = dyn FnMut(&[Piece], Span) -> Result<i64, Problem> + 'e;
+/// What a token function asks of whatever runs it.
+pub(super) trait Answers {
+    /// The value of the constant expression made of `pieces`, for a call
+    /// at `site`.
+    fn value(&mut self, pieces: &[Piece], site: Span) -> Result<i64, Problem>;
+
+    /// Whether a classic macro is named `name`, in this case.
+    fn is_macro(&self, name: &str) -> bool;
+
+    /// Whether `name` is a mnemonic of the current CPU, in any case.
+    fn is_mnemonic(&self, name: &str) -> bool;
+}
 
 /// Whether any of `pieces` calls a token function.
 pub(super) fn any(pieces: &[Piece]) -> bool {
-    pieces.iter().any(is_function)
+    pieces.iter().any(|piece| is_function(piece, false))
 }
 
-/// Runs the token functions in `pieces`. `evaluate` gives the value of the
-/// constant expression made of the pieces it is passed.
-pub(super) fn run(pieces: Vec<Piece>, evaluate: &mut Evaluate<'_>) -> Result<Vec<Piece>, Problem> {
+/// Runs the token functions in `pieces`, asking `answers` what they need.
+pub(super) fn run(pieces: Vec<Piece>, answers: &mut dyn Answers) -> Result<Vec<Piece>, Problem> {
     let mut stream = Stream {
         stack: vec![pieces.into_iter()],
-        evaluate,
+        answers,
+        lists: 0,
     };
     let mut out = Vec::new();
     while let Some(piece) = stream.next()? {
@@ -57,7 +92,9 @@ pub(super) fn run(pieces: Vec<Piece>, evaluate: &mut Evaluate<'_>) -> Result<Vec
 
 struct Stream<'e> {
     stack: Vec<std::vec::IntoIter<Piece>>,
-    evaluate: &'e mut Evaluate<'e>,
+    answers: &'e mut dyn Answers,
+    /// How many token lists are being read, one inside another.
+    lists: usize,
 }
 
 /// A call being read: where it is, for messages and for what it makes.
@@ -107,7 +144,7 @@ impl Stream<'_> {
             let Some(piece) = self.next_raw() else {
                 return Ok(None);
             };
-            if is_function(&piece) {
+            if is_function(&piece, self.lists > 0) {
                 let call = Call {
                     name: piece.text.to_ascii_lowercase(),
                     site: piece.site,
@@ -153,6 +190,18 @@ impl Stream<'_> {
     /// The pieces of an expression, up to a `,` or `)` outside parentheses,
     /// which is left to read, and its value.
     fn value(&mut self, call: &Call) -> Result<i64, Problem> {
+        let lists = std::mem::take(&mut self.lists);
+        let pieces = self.value_pieces();
+        self.lists = lists;
+        let pieces = pieces?;
+        if pieces.iter().all(Piece::is_blank) {
+            return Err(call.problem(format!("expected a value in `{}`", call.name)));
+        }
+        self.answers.value(&pieces, call.site)
+    }
+
+    /// The pieces of an expression, up to a `,` or `)` outside parentheses.
+    fn value_pieces(&mut self) -> Result<Vec<Piece>, Problem> {
         let mut pieces = Vec::new();
         let mut depth = 0_usize;
         while let Some(piece) = self.next()? {
@@ -168,25 +217,31 @@ impl Stream<'_> {
             }
             pieces.push(piece);
         }
-        if pieces.iter().all(Piece::is_blank) {
-            return Err(call.problem(format!("expected a value in `{}`", call.name)));
-        }
-        (self.evaluate)(&pieces, call.site)
+        Ok(pieces)
     }
 
     /// A token list: up to the first `)`, or in braces and then `)`. Blanks
     /// are left out.
     fn list(&mut self, call: &Call) -> Result<Vec<Piece>, Problem> {
+        self.list_to(call, kinds::R_PAREN)
+    }
+
+    /// A token list: up to the first `after`, or in braces and then `after`.
+    /// Braces do not nest: the first `}` ends the list.
+    fn list_to(&mut self, call: &Call, after: SyntaxKind) -> Result<Vec<Piece>, Problem> {
+        self.lists += 1;
+        let list = self.list_pieces(call, after);
+        self.lists -= 1;
+        list
+    }
+
+    fn list_pieces(&mut self, call: &Call, after: SyntaxKind) -> Result<Vec<Piece>, Problem> {
         let mut piece = self.next_solid()?;
         let braced = piece.as_ref().is_some_and(|p| p.kind == kinds::L_CURLY);
         if braced {
             piece = self.next_solid()?;
         }
-        let end = if braced {
-            kinds::R_CURLY
-        } else {
-            kinds::R_PAREN
-        };
+        let end = if braced { kinds::R_CURLY } else { after };
         let mut list = Vec::new();
         loop {
             match piece {
@@ -202,9 +257,29 @@ impl Stream<'_> {
             piece = self.next_solid()?;
         }
         if braced {
-            self.expect(call, kinds::R_PAREN, "`)`")?;
+            let what = if after == kinds::COMMA { "`,`" } else { "`)`" };
+            self.expect(call, after, what)?;
         }
         Ok(list)
+    }
+
+    /// A name for `.definedmacro` or `.ismnemonic`, and its `)`.
+    fn name(&mut self, call: &Call) -> Result<String, Problem> {
+        let name = self.expect(call, kinds::IDENT, "a name")?;
+        self.expect(call, kinds::R_PAREN, "`)`")?;
+        Ok(name.text)
+    }
+
+    /// The tokens of `.match` or `.xmatch`, and whether they match: `exact`
+    /// for `.xmatch`, which compares names, strings and numbers too.
+    fn matches(&mut self, call: &Call, exact: bool) -> Result<bool, Problem> {
+        let first = self.list_to(call, kinds::COMMA)?;
+        let second = self.list(call)?;
+        Ok(first.len() == second.len()
+            && first
+                .iter()
+                .zip(&second)
+                .all(|(a, b)| same_token(a, b, exact)))
     }
 
     /// Runs a call of a token function, whose name has been read.
@@ -253,6 +328,44 @@ impl Stream<'_> {
                 let text = self.name_or_number(call)?;
                 self.expect(call, kinds::R_PAREN, "`)`")?;
                 Ok(vec![string_piece(call, text.into_bytes())])
+            }
+            ".strlen" => {
+                let bytes = self.string(call)?;
+                self.expect(call, kinds::R_PAREN, "`)`")?;
+                Ok(vec![number_piece(call, bytes.len())])
+            }
+            ".strat" => {
+                let bytes = self.string(call)?;
+                self.expect(call, kinds::COMMA, "`,`")?;
+                let index = self.value(call)?;
+                self.expect(call, kinds::R_PAREN, "`)`")?;
+                let byte = usize::try_from(index)
+                    .ok()
+                    .and_then(|i| bytes.get(i))
+                    .ok_or_else(|| call.problem("the index of `.strat` is outside the string"))?;
+                Ok(vec![number_piece(call, usize::from(*byte))])
+            }
+            ".tcount" => {
+                let count = self.list(call)?.len();
+                Ok(vec![number_piece(call, count)])
+            }
+            ".blank" => {
+                let blank = self.list(call)?.is_empty();
+                Ok(vec![number_piece(call, usize::from(blank))])
+            }
+            ".match" | ".xmatch" => {
+                let matched = self.matches(call, call.name == ".xmatch")?;
+                Ok(vec![number_piece(call, usize::from(matched))])
+            }
+            ".definedmacro" => {
+                let name = self.name(call)?;
+                let defined = self.answers.is_macro(&name);
+                Ok(vec![number_piece(call, usize::from(defined))])
+            }
+            ".ismnem" | ".ismnemonic" => {
+                let name = self.name(call)?;
+                let mnemonic = self.answers.is_mnemonic(&name);
+                Ok(vec![number_piece(call, usize::from(mnemonic))])
             }
             _ => {
                 let bytes = self.sprintf(call)?;
@@ -418,6 +531,89 @@ fn shown(bytes: &[u8]) -> String {
     text.push('"');
     text
 }
+
+/// A number token for `value`.
+fn number_piece(call: &Call, value: usize) -> Piece {
+    call.made(value.to_string(), kinds::NUMBER)
+}
+
+/// Whether two tokens are the same token to `.match`, or, when `exact`, to
+/// `.xmatch`, as ca65 V2.19's `TokCmp` decides. Each register and each
+/// control word is a token of its own, with a word's long and short
+/// spellings one token, and `.and` the same token as `&&`. To `.xmatch`,
+/// names and strings must also be spelt alike, and numbers and characters
+/// have the same value.
+fn same_token(a: &Piece, b: &Piece, exact: bool) -> bool {
+    let (ka, kb) = (token_identity(a), token_identity(b));
+    if ka != kb {
+        return false;
+    }
+    if !exact {
+        return true;
+    }
+    match a.kind {
+        kinds::IDENT | kinds::CHEAP_IDENT => a.text == b.text,
+        kinds::STRING => a.string_bytes() == b.string_bytes(),
+        kinds::NUMBER => crate::number::value(&a.text) == crate::number::value(&b.text),
+        kinds::CHAR => a.text == b.text,
+        _ => true,
+    }
+}
+
+/// What makes a token the token it is, apart from the value `.xmatch`
+/// compares.
+fn token_identity(piece: &Piece) -> (SyntaxKind, String) {
+    match piece.kind {
+        kinds::REGISTER => (kinds::REGISTER, piece.text.to_ascii_uppercase()),
+        kinds::CONTROL => {
+            let word = piece.text.to_ascii_lowercase();
+            match OPERATOR_WORDS.iter().find(|(w, _)| *w == word) {
+                Some((_, kind)) => (*kind, String::new()),
+                None => {
+                    let word = SHORT_WORDS
+                        .iter()
+                        .find(|(short, _)| *short == word)
+                        .map_or(word.clone(), |(_, long)| (*long).to_owned());
+                    (kinds::CONTROL, word)
+                }
+            }
+        }
+        kind => (kind, String::new()),
+    }
+}
+
+/// The control words that are the same token as an operator, from ca65
+/// V2.19's `scanner.c`.
+const OPERATOR_WORDS: &[(&str, SyntaxKind)] = &[
+    (".and", kinds::AMP_AMP),
+    (".bitand", kinds::AMP),
+    (".bitnot", kinds::TILDE),
+    (".bitor", kinds::PIPE),
+    (".bitxor", kinds::CARET),
+    (".not", kinds::BANG),
+    (".or", kinds::PIPE_PIPE),
+    (".shl", kinds::SHL),
+    (".shr", kinds::SHR),
+];
+
+/// The short spellings of control words, each with its long one, from ca65
+/// V2.19's `scanner.c`.
+const SHORT_WORDS: &[(&str, &str)] = &[
+    (".byt", ".byte"),
+    (".cap", ".capability"),
+    (".def", ".defined"),
+    (".delmac", ".delmacro"),
+    (".endmac", ".endmacro"),
+    (".endrep", ".endrepeat"),
+    (".exitmac", ".exitmacro"),
+    (".fopt", ".fileopt"),
+    (".ismnem", ".ismnemonic"),
+    (".mac", ".macro"),
+    (".pagelen", ".pagelength"),
+    (".ref", ".referenced"),
+    (".refto", ".referto"),
+    (".undef", ".undefine"),
+];
 
 /// The tokens of a list, with a space between each, as tokens.
 fn spaced(call: &Call, list: Vec<Piece>) -> Vec<Piece> {

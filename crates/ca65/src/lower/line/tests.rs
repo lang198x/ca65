@@ -2,7 +2,8 @@
 //! assembled by a two-pass assembler as small as the tests need, against
 //! the bytes ca65 V2.19 and ld65 wrote under a flat link at 0.
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
 use asm198x_ir::{Expr as Ir, Operation, align_pad, next_pc};
 use isa198x::OperandKind;
@@ -24,6 +25,8 @@ struct Mini {
     sizes: HashMap<String, i64>,
     pc: i64,
     org: bool,
+    /// The names read so far.
+    read: RefCell<HashSet<String>>,
 }
 
 impl Mini {
@@ -52,6 +55,18 @@ impl Known for Mini {
     fn size_of(&self, name: &str) -> Option<i64> {
         self.sizes.get(name).copied()
     }
+
+    fn is_defined(&self, name: &str) -> bool {
+        self.known.contains_key(name)
+    }
+
+    fn is_referenced(&self, name: &str) -> bool {
+        self.read.borrow().contains(name)
+    }
+
+    fn read(&self, name: &str) {
+        self.read.borrow_mut().insert(name.to_owned());
+    }
 }
 
 impl Host for Mini {
@@ -64,8 +79,8 @@ impl Host for Mini {
         self.known.contains_key(&name.text())
     }
 
-    fn is_referenced(&mut self, _: &NameRef) -> bool {
-        false
+    fn is_referenced(&mut self, name: &NameRef) -> bool {
+        self.read.borrow().contains(&name.text())
     }
 
     fn is_constant(&mut self, expr: &Expr) -> bool {
@@ -257,6 +272,44 @@ const MEASURED: &[(&str, Option<&str>)] = &[
     (".byte .sizeof(nosuch)\n", None),
     (".byte .sizeof(*)\n", None),
     ("a1: .byte 1\n.byte .SIZEOF(a1)\n", Some("0101")),
+    // A line's label is defined before the rest of the line is read.
+    (".org $10\nl: lda l\n", Some("a510")),
+    ("q: .byte .defined(q),.const(q)\n", Some("0100")),
+    (".org 2\nl: .byte .const(l)\n", Some("01")),
+    ("l: .byte .const(l)\n", Some("00")),
+    // `.defined` and `.referenced` do not read the name; `.const` and a
+    // plain use do, in the order ca65 reads them.
+    (".byte .defined(v),.ref(v)\nv=1\n", Some("0000")),
+    ("v=1\n.byte .ref(v),.defined(v),.ref(v)\n", Some("000100")),
+    (
+        "v=1\n.byte .def(v),.ref(v),.referenced(v)\n",
+        Some("010000"),
+    ),
+    (".byte .ref(v)\n.byte v\nv=1\n", Some("0001")),
+    (".byte .ref(v),v,.ref(v)\nv=1\n", Some("000101")),
+    (".byte .defined(v),.const(v)\nv=1\n", Some("0000")),
+    (
+        "v=1\n.byte .const(v),.const(v+1),.const(*),.const(w)\nw:\n",
+        Some("01010000"),
+    ),
+    (".byte .const(3)\n", Some("01")),
+    ("q=1\n.byte .const(q),.ref(q)\n", Some("0101")),
+    (
+        "VALUE=2\n.byte .ref(VALUE),.const(VALUE),.ref(VALUE)\n",
+        Some("000101"),
+    ),
+    ("l: .byte .ref(l),.ref(l)\n", Some("0000")),
+    (
+        "v=1\n.if .ref(v)\n.byte 1\n.endif\n.ifref v\n.byte 2\n.endif\n",
+        Some(""),
+    ),
+    (
+        "v=1\n.if .const(v)\n.byte 1\n.endif\n.ifref v\n.byte 2\n.endif\n",
+        Some("0102"),
+    ),
+    (".byte .defined(1)\n", None),
+    (".byte .ref(1+v)\n", None),
+    (".byte .const(1,2)\n", None),
 ];
 
 #[test]
@@ -413,7 +466,7 @@ fn ca65_refuses_a_label_before_a_scope() {
 fn what_is_not_lowered_yet_says_so() {
     let profile = Profile::CA65_2_19_6502;
     for source in [
-        ".byte .strlen(\"ab\")\n",
+        ".byte .cpu\n",
         ".segment \"X\": dword\n",
         ".struct s\n",
         ".proc p: far\n",
