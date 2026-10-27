@@ -381,6 +381,16 @@ impl Stream<'_> {
                         .ok()
                         .filter(|b| *b != 0)
                         .ok_or_else(|| call.problem("a `%c` argument must be 1 to 255"))?;
+                    if !byte.is_ascii() {
+                        return Err(Problem {
+                            site: call.site,
+                            message: format!(
+                                "`.sprintf` making the byte ${byte:02X}, which this text cannot \
+                                 hold, is not supported"
+                            ),
+                            kind: DiagnosticKind::Unsupported,
+                        });
+                    }
                     spec.pad(String::new(), char::from(byte).to_string(), false)
                 }
                 other => {

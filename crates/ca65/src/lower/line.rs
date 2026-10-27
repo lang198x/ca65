@@ -1,6 +1,6 @@
 //! One line, as the expander hands it over, lowered to IR statements.
 
-use asm198x_ir::{DataRange, Expr as Ir, Operation};
+use asm198x_ir::{BinOp, DataRange, Expr as Ir, Operation};
 use lang198x_syntax::{Diagnostic, SyntaxToken};
 
 use super::expr::{self, invalid, unsupported};
@@ -114,11 +114,17 @@ fn command_op(command: &Command, known: &dyn Known) -> Result<Option<Operation>,
         .map(|w| w.text().to_ascii_lowercase())
         .unwrap_or_default();
     let values = || command.values().collect::<Vec<Expr>>();
+    // ca65's `*` in a list is the address of the value it is in, so the
+    // second `*` in `.word *, *` is two more than the first.
     let sized = |width: u8, big_endian: bool, values: Vec<Ir>| Operation::Sized {
         width,
         big_endian,
         range: DataRange::Unsigned,
-        values,
+        values: values
+            .into_iter()
+            .zip((0_i64..).step_by(usize::from(width)))
+            .map(|(value, offset)| at_offset(value, offset))
+            .collect(),
     };
     let lowered = |values: Vec<Expr>| {
         values
@@ -183,6 +189,24 @@ fn command_op(command: &Command, known: &dyn Known) -> Result<Option<Operation>,
         }
         other => return Err(unsupported(range, &format!("`{other}`"))),
     }))
+}
+
+/// `value` with each `*` moved on by `offset` bytes.
+fn at_offset(value: Ir, offset: i64) -> Ir {
+    let moved = |inner: Box<Ir>| Box::new(at_offset(*inner, offset));
+    match value {
+        Ir::Pc if offset != 0 => Ir::Bin(BinOp::Add, Box::new(Ir::Pc), Box::new(Ir::Num(offset))),
+        Ir::Lo(inner) => Ir::Lo(moved(inner)),
+        Ir::Hi(inner) => Ir::Hi(moved(inner)),
+        Ir::Bank(inner) => Ir::Bank(moved(inner)),
+        Ir::Neg(inner) => Ir::Neg(moved(inner)),
+        Ir::BitNot(inner) => Ir::BitNot(moved(inner)),
+        Ir::LogNot(inner) => Ir::LogNot(moved(inner)),
+        Ir::FixRound(inner) => Ir::FixRound(moved(inner)),
+        Ir::TrailingZeros(inner) => Ir::TrailingZeros(moved(inner)),
+        Ir::Bin(op, lhs, rhs) => Ir::Bin(op, moved(lhs), moved(rhs)),
+        other => other,
+    }
 }
 
 /// The values of `.byte` and its kin: a string gives each of its bytes.

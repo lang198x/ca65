@@ -163,7 +163,11 @@ fn kinds(source: &str) -> Vec<DiagnosticKind> {
 fn results_this_syntax_cannot_write_are_unsupported() {
     // ca65 makes a string holding a quote, and `.ident("x")` is the symbol
     // `x`; here `x` would read as the register.
-    for source in [".byte .sprintf(\"%c\", 34)\n", "q=1\n.byte .ident(\"x\")\n"] {
+    for source in [
+        ".byte .sprintf(\"%c\", 34)\n",
+        ".byte .sprintf(\"%c\", 255)\n",
+        "q=1\n.byte .ident(\"x\")\n",
+    ] {
         assert_eq!(kinds(source), [DiagnosticKind::Unsupported], "{source:?}");
     }
 }

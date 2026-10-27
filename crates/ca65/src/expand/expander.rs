@@ -624,8 +624,16 @@ impl Expander {
                 let word = command.word().map(|w| w.text().to_ascii_lowercase());
                 match word.as_deref() {
                     Some(word) if is_conditional(word) => {
+                        // ca65 defines a label on a conditional's line when
+                        // the line is read while lines run, before the
+                        // conditional acts.
+                        let labelled = line.label().is_some() || line.unnamed_label().is_some();
                         self.conditional(&command, word, text, host);
-                        return None;
+                        return labelled.then_some(ActiveLine {
+                            line,
+                            text,
+                            label_only: true,
+                        });
                     }
                     Some(".end") => {
                         self.ended = true;

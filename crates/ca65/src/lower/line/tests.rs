@@ -218,6 +218,10 @@ const MEASURED: &[(&str, Option<&str>)] = &[
     ("@c: .byte 1\n.word @c\n", Some("010000")),
     ("q2 := *\n.word q2\n", Some("0000")),
     (".word *\n", Some("0000")),
+    // `*` in a list is the address of the value it is in.
+    (".word *, *+2, *\n", Some("000004000400")),
+    (".dbyt *, *\n", Some("00000002")),
+    (".org $1000\n.word *,*+2\n", Some("00100410")),
     ("lda fwd\nfwd = $12\n", Some("ad1200")),
     ("fwd = $12\nlda fwd\n", Some("a512")),
     ("lab: nop\nlda lab\n", Some("eaad0000")),
