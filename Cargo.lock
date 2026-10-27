@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "lang198x-ca65"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "lang198x-syntax",
  "proptest",
