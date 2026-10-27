@@ -197,7 +197,10 @@ const MEASURED: &[(&str, Want)] = &[
     (".byte .tcount({.match({1},{2})})\n", Refused("")),
     (".byte .tcount(.strlen(\"ab\"))\n", Refused("")),
     (".byte .left(.strlen(\"a\"),{7 8})\n", Bytes(&[7])),
-    (".byte .left(1,{.left(.strlen(\"a\"),{7 8})})\n", Bytes(&[7])),
+    (
+        ".byte .left(1,{.left(.strlen(\"a\"),{7 8})})\n",
+        Bytes(&[7]),
+    ),
     (".byte .left(1,{.strlen(\"abc\")})\n", Refused("")),
     (".byte .tcount({.concat(\"a\",\"b\")})\n", Bytes(&[1])),
     (
