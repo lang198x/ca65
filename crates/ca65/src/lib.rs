@@ -21,6 +21,7 @@
 //! ```
 
 pub mod ast;
+pub mod expand;
 mod keywords;
 pub mod kinds;
 mod lexer;
