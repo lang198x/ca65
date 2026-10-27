@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.9...lang198x-ca65-v0.0.10) - 2026-10-27
+
+### Added
+
+- report the file `.incbin` puts in place
+
 ## [0.0.9](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.8...lang198x-ca65-v0.0.9) - 2026-10-27
 
 ### Added
