@@ -4,10 +4,11 @@ use asm198x_ir::{BinOp, DataRange, Expr as Ir, Operation};
 use lang198x_syntax::{Diagnostic, SyntaxToken};
 
 use super::expr::{self, invalid, unsupported};
-use super::{Known, instruction};
+use super::{Known, Size, instruction};
 use crate::Profile;
 use crate::ast::{Command, Expr, Statement, View};
 use crate::expand::ActiveLine;
+use crate::kinds;
 
 /// A statement a line lowers to: a label, an operation, or both.
 ///
@@ -33,6 +34,34 @@ pub struct Lowered {
     pub items: Vec<Item>,
     /// The change the line makes to the scopes, made after its statements.
     pub scope: Option<Scope>,
+    /// The change the line makes to the segment later lines go into, made
+    /// after its statements.
+    pub segment: Option<Segment>,
+}
+
+/// A change to the segment lines go into, from `.segment`, its short forms
+/// `.code`, `.rodata`, `.data`, `.bss` and `.zeropage`, or `.pushseg` and
+/// `.popseg`.
+///
+/// Lowering only reports these. The assembler keeps the segments, and the
+/// linker's configuration places them. A program starts in `CODE`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Segment {
+    /// Later lines go into the segment `name`, which is case-sensitive.
+    /// `size` is the address size written after the name, if any; ca65
+    /// gives `ZEROPAGE` the zero page and every other segment absolute
+    /// addresses unless one is written.
+    Use {
+        /// The segment's name.
+        name: String,
+        /// The address size written after it.
+        size: Option<Size>,
+    },
+    /// `.pushseg`: the current segment is saved.
+    Push,
+    /// `.popseg`: the segment saved last is current again.
+    Pop,
 }
 
 /// A change to the scopes names live in, from `.scope`, `.proc`,
@@ -86,6 +115,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
         labels.push(name.text());
     }
     let mut scope = None;
+    let mut segment = None;
     let op = if line.label_only() {
         None
     } else {
@@ -123,7 +153,13 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
                     scope = Some(change);
                     None
                 }
-                None => command_op(&command, line, known)?,
+                None => match segment_change(&command)? {
+                    Some(change) => {
+                        segment = Some(change);
+                        None
+                    }
+                    None => command_op(&command, line, known)?,
+                },
             },
             Some(_) => {
                 return Err(unsupported(
@@ -148,7 +184,68 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
         }),
         (None, None) => {}
     }
-    Ok(Lowered { items, scope })
+    Ok(Lowered {
+        items,
+        scope,
+        segment,
+    })
+}
+
+/// The change to the segment a command makes, if it is `.segment`, one of
+/// its short forms, `.pushseg` or `.popseg`.
+fn segment_change(command: &Command) -> Result<Option<Segment>, Diagnostic> {
+    let range = command.syntax().text_range();
+    let word = command
+        .word()
+        .map(|w| w.text().to_ascii_lowercase())
+        .unwrap_or_default();
+    let named = |name: &str| {
+        Some(Segment::Use {
+            name: name.to_owned(),
+            size: None,
+        })
+    };
+    Ok(match word.as_str() {
+        ".code" => named("CODE"),
+        ".rodata" => named("RODATA"),
+        ".data" => named("DATA"),
+        ".bss" => named("BSS"),
+        ".zeropage" => named("ZEROPAGE"),
+        ".pushseg" => Some(Segment::Push),
+        ".popseg" => Some(Segment::Pop),
+        ".segment" => {
+            let mut values = command.values();
+            let name = match (values.next(), values.next()) {
+                (Some(Expr::Literal(literal)), None) => literal
+                    .token()
+                    .filter(|t| t.kind() == kinds::STRING)
+                    .map(|t| {
+                        let text = t.text().strip_prefix('"').unwrap_or(t.text());
+                        text.strip_suffix('"').unwrap_or(text).to_owned()
+                    }),
+                _ => None,
+            }
+            .ok_or_else(|| invalid(range, "`.segment` takes the segment's name, in quotes"))?;
+            let size = match command.address_size() {
+                None => None,
+                Some(word) => Some(address_size(&word.text().to_ascii_lowercase()).ok_or_else(
+                    || unsupported(range, &format!("the address size `{}`", word.text())),
+                )?),
+            };
+            Some(Segment::Use { name, size })
+        }
+        _ => None,
+    })
+}
+
+/// The address size a word after a colon names, as ca65 spells them.
+fn address_size(word: &str) -> Option<Size> {
+    match word {
+        "zeropage" | "zp" | "direct" | "dp" => Some(Size::Zero),
+        "absolute" | "abs" | "near" => Some(Size::Absolute),
+        "far" | "long" => Some(Size::Far),
+        _ => None,
+    }
 }
 
 /// The change to the scopes a command makes, if it is `.scope`, `.proc`,

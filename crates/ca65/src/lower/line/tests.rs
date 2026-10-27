@@ -12,7 +12,7 @@ use super::line;
 use crate::Profile;
 use crate::ast::{Expr, NameRef};
 use crate::expand::{Expander, Host};
-use crate::lower::{self, Known, Scope, Size, Value};
+use crate::lower::{self, Known, Scope, Segment, Size, Value};
 
 /// The assembler: what each name is known as so far, and the final values
 /// from the pass before.
@@ -353,6 +353,52 @@ fn scope_commands_are_reported_after_the_lines_items() {
     assert_eq!(scope("nop\n"), Ok((vec![(None, true)], None)));
 }
 
+/// The change to the segment `source`'s first line makes.
+fn segment(source: &str) -> Result<Option<Segment>, String> {
+    let profile = Profile::CA65_2_19_6502;
+    let mut expander = Expander::new(source, profile).expect("parses");
+    let mut mini = Mini::default();
+    let active = expander.next_line(&mut mini).expect("a line");
+    line(&active, profile, &mini)
+        .map(|lowered| lowered.segment)
+        .map_err(|d| d.message().to_owned())
+}
+
+#[test]
+fn segment_commands_are_reported() {
+    let used = |name: &str, size| {
+        Ok(Some(Segment::Use {
+            name: name.to_owned(),
+            size,
+        }))
+    };
+    assert_eq!(segment(".segment \"CODE\"\n"), used("CODE", None));
+    // Names are case-sensitive, as ld65 reads them.
+    assert_eq!(segment(".segment \"code\"\n"), used("code", None));
+    assert_eq!(
+        segment(".segment \"ZP2\": zeropage\n"),
+        used("ZP2", Some(Size::Zero))
+    );
+    assert_eq!(
+        segment(".segment \"A\": abs\n"),
+        used("A", Some(Size::Absolute))
+    );
+    assert_eq!(segment(".segment \"F\": far\n"), used("F", Some(Size::Far)));
+    for (word, name) in [
+        (".code", "CODE"),
+        (".RODATA", "RODATA"),
+        (".data", "DATA"),
+        (".bss", "BSS"),
+        (".zeropage", "ZEROPAGE"),
+    ] {
+        assert_eq!(segment(&format!("{word}\n")), used(name, None), "{word}");
+    }
+    assert_eq!(segment(".pushseg\n"), Ok(Some(Segment::Push)));
+    assert_eq!(segment(".popseg\n"), Ok(Some(Segment::Pop)));
+    assert_eq!(segment("nop\n"), Ok(None));
+    assert!(segment(".segment 5\n").is_err());
+}
+
 #[test]
 fn ca65_refuses_a_label_before_a_scope() {
     let profile = Profile::CA65_2_19_6502;
@@ -367,8 +413,8 @@ fn ca65_refuses_a_label_before_a_scope() {
 fn what_is_not_lowered_yet_says_so() {
     let profile = Profile::CA65_2_19_6502;
     for source in [
-        ".segment \"CODE\"\n",
         ".byte .strlen(\"ab\")\n",
+        ".segment \"X\": dword\n",
         ".struct s\n",
         ".proc p: far\n",
     ] {
