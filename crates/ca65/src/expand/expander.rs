@@ -38,7 +38,7 @@ use std::collections::HashMap;
 
 use lang198x_syntax::{
     Diagnostic, DiagnosticKind, ExpansionBuilder, FileId, Origin, Provenance, Span, SyntaxElement,
-    SyntaxKind, SyntaxToken, TextId, TextRange,
+    SyntaxKind, SyntaxToken, TextId, TextRange, TextSize,
 };
 
 use super::conditional::{Conditionals, Misfit};
@@ -264,6 +264,9 @@ pub struct Expander {
     expanded_bytes: usize,
     conditionals: Conditionals,
     files: Vec<IncludedFile>,
+    /// Where each line starts in each file, by file number, for
+    /// [`locate`](Expander::locate).
+    pub(super) line_starts: Vec<Vec<TextSize>>,
     ended: bool,
     finished: bool,
     diagnostics: Vec<(TextId, Diagnostic)>,
@@ -332,6 +335,7 @@ impl Expander {
             expanded_bytes: 0,
             conditionals: Conditionals::default(),
             files: Vec::new(),
+            line_starts: vec![super::locate::line_starts(text)],
             ended: false,
             finished: false,
             diagnostics: Vec::new(),
@@ -590,6 +594,7 @@ impl Expander {
         };
         let id = FileId::new(number);
         self.files.push(IncludedFile { id, name, site });
+        self.line_starts.push(super::locate::line_starts(&loaded));
         match self.load(TextId::File(id), &loaded, None, true) {
             Ok(source) => self.sources.push(source),
             Err(_) => self.report(text, site.range(), "the included file is too long to read"),

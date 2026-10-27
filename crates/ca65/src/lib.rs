@@ -34,6 +34,9 @@ mod parser;
 mod profile;
 
 pub use keywords::{CONTROL_COMMANDS, is_control_command};
+/// The shared syntax layer this crate builds on, for its spans, provenance
+/// and diagnostics.
+pub use lang198x_syntax as syntax;
 pub use lexer::{Lexed, Lexer, Token, lex};
 pub use parser::{Context, ParseError, parse, parse_with};
 pub use profile::{Cpu, Mode, Profile};
