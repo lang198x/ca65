@@ -1,14 +1,18 @@
-//! Running a program's lines: conditionals, macros and `.end`.
+//! Running a program's lines: conditionals, macros, repeats and `.end`.
 //!
 //! The expander follows ca65 V2.19's own model (`OneLine` in `main.c`,
 //! `DoConditionals` in `condasm.c`, and `macro.c`). It reads lines from a
 //! stack of sources: the program's file at the bottom, and above it the text
-//! of each macro call being run. It keeps the stack of open conditionals.
+//! of each macro call or repeat being run. It keeps the stack of open
+//! conditionals, which is not tied to the sources: a conditional may open in
+//! one time round a repeat and close in the next, as in ca65.
 //!
 //! While lines run, a conditional command at the start of a statement opens,
 //! turns or closes a level, asking the host for its condition. `.macro`
 //! defines a macro from the lines up to `.endmacro`, and a call runs its text
-//! as a new source. Any other line goes to the host.
+//! as a new source. `.repeat` takes the lines up to its `.endrepeat` and runs
+//! them as a new source, made again each time round. Any other line goes to
+//! the host.
 //!
 //! While lines do not run, ca65 skips them token by token, looking only for
 //! conditional commands, wherever they are on a line. So `.byte 1 .endif`
@@ -20,6 +24,10 @@
 //! ca65's scanner reads every token. Syntax problems count only on lines
 //! that run. A conditional opened in a macro stays open after the macro
 //! ends, as in ca65, unless `.exitmacro` leaves it.
+//!
+//! `.exitmacro` inside a repeat inside a macro leaves both at once. ca65
+//! V2.19 instead finishes the repeat first, which its manual's "abort a macro
+//! expansion immediately" does not allow; that is a bug not copied here.
 
 use std::collections::HashMap;
 
@@ -30,6 +38,7 @@ use lang198x_syntax::{
 
 use super::conditional::{Conditionals, Misfit};
 use super::macros::{self, Macro};
+use super::repeats::{self, Repeat};
 use crate::ast::{Command, Expr, Line, MacroCall, NameRef, SourceFile, Statement, View};
 use crate::{Context, Cpu, Mode, ParseError, Profile, kinds, lex, parse_with};
 
@@ -136,6 +145,8 @@ struct Source {
     /// For a macro call, how many conditionals were open when it started,
     /// for `.exitmacro`.
     call_depth: Option<usize>,
+    /// For a repeat, the times round still to come.
+    repeat: Option<Repeat>,
 }
 
 /// The macros defined so far, for the parser's questions.
@@ -350,6 +361,7 @@ impl Expander {
             line_problems,
             next: 0,
             call_depth,
+            repeat: None,
         })
     }
 
@@ -370,7 +382,9 @@ impl Expander {
             if self.sources.len() == 1 {
                 return None;
             }
-            self.sources.pop();
+            if let Some(repeat) = self.sources.pop().and_then(|s| s.repeat) {
+                self.run_again(repeat);
+            }
         }
     }
 
@@ -420,6 +434,20 @@ impl Expander {
                     }
                     Some(".exitmac" | ".exitmacro") => {
                         self.exit_macro(&command, text);
+                        return None;
+                    }
+                    Some(word) if repeats::is_repeat(word) => {
+                        let labelled = line.label().is_some() || line.unnamed_label().is_some();
+                        self.repeat(&command, text, host);
+                        return labelled.then_some(ActiveLine {
+                            line,
+                            text,
+                            label_only: true,
+                        });
+                    }
+                    Some(word) if repeats::is_end(word) => {
+                        let message = format!("`{word}` with no `.repeat` open");
+                        self.report(text, command.syntax().text_range(), &message);
                         return None;
                     }
                     _ => {}
@@ -566,6 +594,104 @@ impl Expander {
             self.ended = true;
             return;
         }
+        self.sources.push(source);
+    }
+
+    /// `.repeat count[, counter]`: the lines up to the `.endrepeat` that
+    /// balances it are its body, which runs as a new source `count` times.
+    fn repeat(&mut self, command: &Command, text: TextId, host: &mut dyn Host) {
+        let site = Span::new(text, command.syntax().text_range());
+        let mut values = command.values();
+        let count = match values.next() {
+            Some(expr) => match host.evaluate(&expr) {
+                Ok(count) => u64::try_from(count).unwrap_or_else(|_| {
+                    self.report(
+                        text,
+                        expr.syntax().text_range(),
+                        "a repeat count must not be negative",
+                    );
+                    0
+                }),
+                Err(message) => {
+                    self.report(text, expr.syntax().text_range(), &message);
+                    0
+                }
+            },
+            None => {
+                self.report(text, site.range(), "`.repeat` needs a count");
+                0
+            }
+        };
+        let counter = values.next().and_then(|expr| match &expr {
+            Expr::Name(name)
+                if !name.is_global()
+                    && name.parts().count() == 1
+                    && name.parts().all(|p| p.kind() == kinds::IDENT) =>
+            {
+                Some(name.text())
+            }
+            _ => {
+                self.report(
+                    text,
+                    expr.syntax().text_range(),
+                    "a repeat's counter must be a plain name",
+                );
+                None
+            }
+        });
+        if let Some(extra) = values.next() {
+            self.report(
+                text,
+                extra.syntax().text_range(),
+                "`.repeat` takes a count and a counter, no more",
+            );
+        }
+        let Some(source) = self.sources.last_mut() else {
+            return;
+        };
+        let rest = source.lines.get(source.next..).unwrap_or_default();
+        let Some(end) = repeats::find_end(rest) else {
+            source.next = source.lines.len();
+            self.report(text, site.range(), "this `.repeat` has no `.endrepeat`");
+            return;
+        };
+        let body = rest[..end.lines].to_vec();
+        source.next += end.lines + 1;
+        self.refuse_rest(&end.rest, text);
+        if end.mid_line && count > 0 {
+            self.report_kind(
+                DiagnosticKind::Unsupported,
+                Span::new(text, end.token.text_range()),
+                "a `.endrepeat` after other tokens on its line is not supported",
+            );
+            return;
+        }
+        self.run_again(Repeat::new(body, text, counter, site, count));
+    }
+
+    /// Runs a repeat's body once more, if it has more times to run.
+    fn run_again(&mut self, mut repeat: Repeat) {
+        let Some(builder) = repeat.next_time() else {
+            return;
+        };
+        let Some((_, mut source)) = self.add_text(builder, None) else {
+            return;
+        };
+        self.expanded_bytes += source
+            .lines
+            .last()
+            .map_or(0, |l| l.syntax().text_range().end().to_usize());
+        if self.expanded_bytes > self.limits.expanded_bytes {
+            let site = repeat.site();
+            self.report(
+                site.text(),
+                site.range(),
+                "the program's repeats make too much text",
+            );
+            self.ended = true;
+            return;
+        }
+        source.repeat = Some(repeat);
         self.sources.push(source);
     }
 

@@ -90,6 +90,16 @@ limit. A body sees the define-style macros in force when it was defined.
 `.repeat count[, counter]`, with the counter replaced in the body and
 repeats nested by counting tokens.
 
+As built: each time round, the body's text is made again with every name
+spelt exactly like the counter replaced, so `I` and `i` differ and an inner
+`.repeat 2, i` loses its counter to an outer `i`, both as in ca65.
+Conditionals are not tied to repeats: one may open in one time round and close
+in the next. Two cases differ from ca65 V2.19 on purpose. `.exitmacro` inside
+a repeat inside a macro leaves at once, where ca65 finishes the repeat first,
+against its manual. A `.endrepeat` after other tokens on its line is reported
+as unsupported when the body runs, since ca65 joins the tokens on either side
+of it into lines that it refused in every program measured.
+
 ### 5e. Define-style macros and token functions
 
 `.define` with and without parameters, expanded everywhere they appear,

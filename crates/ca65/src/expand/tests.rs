@@ -9,6 +9,7 @@ use crate::Profile;
 use crate::ast::View;
 
 mod host;
+mod repeats;
 
 use host::run;
 
