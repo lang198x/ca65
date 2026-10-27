@@ -96,9 +96,11 @@ spelt exactly like the counter replaced, so `I` and `i` differ and an inner
 Conditionals are not tied to repeats: one may open in one time round and close
 in the next. Two cases differ from ca65 V2.19 on purpose. `.exitmacro` inside
 a repeat inside a macro leaves at once, where ca65 finishes the repeat first,
-against its manual. A `.endrepeat` after other tokens on its line is reported
-as unsupported when the body runs, since ca65 joins the tokens on either side
-of it into lines that it refused in every program measured.
+against its manual. A `.endrepeat` after other tokens on its line leaves each
+round's last line unfinished, and ca65 joins it to the next line it reads: the
+next round's first line, or after the last round the line after the
+`.endrepeat`. So `tail: .endrepeat` defines `tail` at that line, and the
+expander joins lines the same way.
 
 ### 5e. Define-style macros
 
