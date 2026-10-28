@@ -57,8 +57,14 @@ pub enum Value {
     /// A constant, such as `q = $12`, or a label under `.org`.
     Constant(i64),
     /// An address whose value the linker gives, such as an import, with
-    /// its address size.
+    /// its address size. ca65 adds, takes away and multiplies these as it
+    /// does labels, so `RED - RED` and `RED * 0` are constants.
     Address(Size),
+    /// A value ca65 cannot work out until the link, and cannot fold with
+    /// anything else, known only by its address size: a name not defined
+    /// yet whose spelling is defined further out, or a value made with an
+    /// operation the linker works out, such as `lab & $FF`.
+    Opaque(Size),
     /// A label the linker places, `offset` bytes into the segment the
     /// assembler numbers `segment`, which has address size `size`. Two of
     /// these in one segment are a known distance apart, so `r - l` is a
@@ -159,11 +165,14 @@ pub fn value(expr: &asm198x_ir::Expr, known: &dyn Known) -> Value {
             value: sum.value,
             size,
         },
-        Some(sum) if matches!(sum.terms.as_slice(), [(_, 1)]) => Value::Placed {
-            segment: sum.terms[0].0,
-            offset: sum.value,
-            size,
+        Some(sum) => match sum.terms.as_slice() {
+            [(expr::Term::Segment(segment), 1)] => Value::Placed {
+                segment: *segment,
+                offset: sum.value,
+                size,
+            },
+            _ => Value::Address(size),
         },
-        _ => Value::Address(size),
+        None => Value::Opaque(size),
     }
 }

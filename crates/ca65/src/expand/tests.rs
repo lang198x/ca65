@@ -47,6 +47,11 @@ const MEASURED: &[(&str, Want)] = &[
         Bytes(&[2]),
     ),
     (".ifndef v\n.byte 1\n.endif\n", Bytes(&[1])),
+    // The label on a conditional's line is defined before it acts.
+    (
+        "mark: .ifdef mark\n.byte 7\n.else\n.byte 8\n.endif\n",
+        Bytes(&[7]),
+    ),
     (
         ".ifblank\n.byte 1\n.endif\n.ifnblank x9\n.byte 2\n.endif\n.ifblank {}\n.byte 3\n.endif\n",
         Bytes(&[1, 2]),
@@ -410,4 +415,44 @@ fn each_call_has_its_own_local_names() {
         names,
         ["LOCAL_MACRO_SYMBOL_0000", "LOCAL_MACRO_SYMBOL_0001"]
     );
+}
+
+#[test]
+fn a_lines_lexical_problems_wait_until_it_is_read() {
+    let mut expander =
+        Expander::new(".byte 7\n.end $100000000\n", Profile::CA65_2_19_6502).expect("parses");
+    let mut host = host::TestHost::default();
+    let _first = expander.next_line(&mut host).expect("the first line");
+    assert!(expander.diagnostics().is_empty());
+    assert!(expander.next_line(&mut host).is_none());
+    // ca65 never scans what follows `.end`.
+    assert!(expander.diagnostics().is_empty());
+    let mut expander =
+        Expander::new(".byte 7\n.byte $100000000\n", Profile::CA65_2_19_6502).expect("parses");
+    let _first = expander.next_line(&mut host).expect("the first line");
+    assert!(expander.diagnostics().is_empty());
+    let _second = expander.next_line(&mut host);
+    assert_eq!(expander.diagnostics().len(), 1);
+    // A macro's body is scanned as it is defined, though it never runs.
+    let mut expander = Expander::new(
+        ".macro unused\n.byte $100000000\n.endmacro\n",
+        Profile::CA65_2_19_6502,
+    )
+    .expect("parses");
+    while expander.next_line(&mut host).is_some() {}
+    assert_eq!(expander.diagnostics().len(), 1);
+}
+
+#[test]
+fn no_function_runs_after_end() {
+    // Measured: ca65 accepts `.end .sprintf("%bad",0)` and stops there.
+    let mut host = host::TestHost::default();
+    for source in [
+        ".end .sprintf(\"%bad\",0)\n",
+        ".ident(\"x\"):.end .sprintf(\"%d\",4294967300)\n",
+    ] {
+        let mut expander = Expander::new(source, Profile::CA65_2_19_6502).expect("parses");
+        while expander.next_line(&mut host).is_some() {}
+        assert!(expander.diagnostics().is_empty(), "{source}");
+    }
 }

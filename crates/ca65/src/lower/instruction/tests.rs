@@ -187,6 +187,13 @@ const MEASURED: &[(&[Name], &str, Option<&str>)] = &[
     (&[], "lda #!0", Some("a901")),
     (&[], "lda f:$12", None),
     (&[], "lda z:$1234", None),
+    // Measured: an absolute import forced onto the zero page, or a far
+    // value forced to absolute, is "Illegal addressing mode".
+    (&[("e", Value::Address(ABSOLUTE), 0)], "lda z:e", None),
+    (&[], "lda a:$123456", None),
+    (&[], "lda z:#$12", None),
+    (&[], "lda a:($12,x)", None),
+    (&[], "lda z:($12),y", None),
     (&[], "jmp z:$12", None),
     (&[], "stx $1234,y", None),
     (&[], "bne $1000", None),

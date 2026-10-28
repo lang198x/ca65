@@ -11,7 +11,7 @@ use isa198x::InstructionSet;
 use lang198x_syntax::{Diagnostic, SyntaxToken};
 
 use super::expr::{self, invalid};
-use super::{Known, Size};
+use super::{Known, Size, Value};
 use crate::ast::{Instruction, Operand, View};
 use crate::{Cpu, Mode, Profile};
 
@@ -114,13 +114,22 @@ fn choose(
     if operand.accumulator().is_some() {
         return Ok(("accumulator", None));
     }
+    // ca65 forces a size only on an address: `lda z:#1` and
+    // `lda a:($12,x)` are "Illegal addressing mode".
+    let forced_on_other = operand.address_size().is_some();
     if let Some(immediate) = operand.immediate() {
+        if forced_on_other {
+            return Err(None);
+        }
         return Ok(("immediate", Some(lowered(immediate.expr())?)));
     }
     if operand.long_indirect().is_some() {
         return Err(None);
     }
     if let Some(indirect) = operand.indirect() {
+        if forced_on_other {
+            return Err(None);
+        }
         let value = lowered(indirect.expr())?;
         let inner = register(indirect.inner_register());
         let outer = register(indirect.outer_register());
@@ -136,8 +145,13 @@ fn choose(
     let forced = operand
         .address_size()
         .map(|t| t.text().trim_end_matches(':').to_ascii_lowercase());
+    // A size forced on a value bigger than it is "Illegal addressing
+    // mode", as ca65 takes the value's own size from the forced choices.
+    let studied = expr::size(&value, &Defaulted(known));
     let size = match forced.as_deref() {
+        Some("z") if studied != Size::Zero => return Err(None),
         Some("z") => Size::Zero,
+        Some("a") if studied == Size::Far => return Err(None),
         Some("a") => Size::Absolute,
         Some(_) => Size::Far,
         None => expr::size(&value, known),
@@ -158,6 +172,23 @@ fn choose(
         _ => return Err(None),
     };
     Ok((mode, Some(value)))
+}
+
+/// What `known` knows, but with a name not known yet taking no size, as in
+/// ca65, where it takes the default and so leaves a forced size alone.
+struct Defaulted<'k>(&'k dyn Known);
+
+impl Known for Defaulted<'_> {
+    fn name(&self, name: &str) -> Value {
+        match self.0.name(name) {
+            Value::Unknown => Value::Opaque(Size::Zero),
+            other => other,
+        }
+    }
+
+    fn pc(&self) -> Value {
+        self.0.pc()
+    }
 }
 
 fn register(token: Option<SyntaxToken>) -> Option<String> {
