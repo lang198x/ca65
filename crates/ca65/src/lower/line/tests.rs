@@ -744,7 +744,7 @@ fn what_is_not_lowered_yet_says_so() {
     for source in [
         ".byte .cpu\n",
         ".segment \"X\": dword\n",
-        ".struct s\n",
+        ".p816\n",
         ".proc p: far\n",
     ] {
         let mut expander = Expander::new(source, profile).expect("parses");
@@ -812,4 +812,166 @@ fn settings_report_the_cpu_stack_and_constructors_export() {
     }
     let problem = first(".setcpu \"nope\"\n").err().expect("unknown");
     assert_eq!(problem.kind(), DiagnosticKind::Invalid);
+}
+
+/// Each line of `source` that runs, lowered, as its record change or its
+/// error.
+fn records(source: &str) -> Vec<Result<Option<crate::lower::Record>, String>> {
+    let profile = Profile::CA65_2_19_6502;
+    let mut expander = Expander::new(source, profile).expect("parses");
+    let mut mini = Mini::default();
+    let mut out = Vec::new();
+    while let Some(active) = expander.next_line(&mut mini) {
+        out.push(
+            line(&active, profile, &mini)
+                .map(|l| l.record)
+                .map_err(|d| d.message().to_owned()),
+        );
+    }
+    out
+}
+
+/// Records as ca65 V2.19 reads them, measured: storage sizes and counts,
+/// `.res`, `.org` and `.tag` in a struct, enum members, nested records, and
+/// `.tag` in the program.
+#[test]
+fn records_report_each_line() {
+    use crate::lower::{Record, RecordKind};
+    let field = |name: Option<&str>, bytes| {
+        Ok(Some(Record::Field {
+            name: name.map(str::to_owned),
+            bytes,
+        }))
+    };
+    assert_eq!(
+        records(
+            ".struct P\nf1 .byte\nf2 .word\nf3 .dword\nf4 .faraddr\nf5 .dbyt\nf6 .addr\n.byte 3\nf7 .res 2\nf8 .word 2\n.endstruct\n"
+        ),
+        [
+            Ok(Some(Record::Open {
+                kind: RecordKind::Struct,
+                name: Some("P".to_owned()),
+                field: None
+            })),
+            field(Some("f1"), 1),
+            field(Some("f2"), 2),
+            field(Some("f3"), 4),
+            field(Some("f4"), 3),
+            field(Some("f5"), 2),
+            field(Some("f6"), 2),
+            field(None, 3),
+            field(Some("f7"), 2),
+            field(Some("f8"), 4),
+            Ok(Some(Record::Close(RecordKind::Struct))),
+        ]
+    );
+    assert_eq!(
+        records(".union\nf .org 10\nt .tag Q 3\ng .struct\n.endstruct\n.endunion\n"),
+        [
+            Ok(Some(Record::Open {
+                kind: RecordKind::Union,
+                name: None,
+                field: None
+            })),
+            Ok(Some(Record::Offset {
+                name: Some("f".to_owned()),
+                offset: 10
+            })),
+            Ok(Some(Record::Tag {
+                name: Some("t".to_owned()),
+                record: "Q".to_owned(),
+                count: 3
+            })),
+            Ok(Some(Record::Open {
+                kind: RecordKind::Struct,
+                name: None,
+                field: Some("g".to_owned())
+            })),
+            Ok(Some(Record::Close(RecordKind::Struct))),
+            Ok(Some(Record::Close(RecordKind::Union))),
+        ]
+    );
+    // A member named with `.org` is where `.org` puts the next one.
+    assert_eq!(
+        records(".struct P\nf1 .org 3\n")[1],
+        Ok(Some(Record::Offset {
+            name: Some("f1".to_owned()),
+            offset: 3
+        }))
+    );
+    let enumerators = records(".enum E\ne1\ne2 = 10\n.endenum\n");
+    assert_eq!(
+        enumerators[1],
+        Ok(Some(Record::Enumerator {
+            name: "e1".to_owned(),
+            value: None
+        }))
+    );
+    assert_eq!(
+        enumerators[2],
+        Ok(Some(Record::Enumerator {
+            name: "e2".to_owned(),
+            value: Some(asm198x_ir::Expr::Num(10))
+        }))
+    );
+    assert_eq!(
+        records("p: .tag Q, 2\n.tag Q\n"),
+        [
+            Ok(Some(Record::Reserve {
+                record: "Q".to_owned(),
+                count: 2
+            })),
+            Ok(Some(Record::Reserve {
+                record: "Q".to_owned(),
+                count: 1
+            })),
+        ]
+    );
+    for (source, message) in [
+        (".struct P\nf1 .byte 0\n", "Range error"),
+        (".struct P\nf1 .byte -1\n", "Range error"),
+        (".struct P\nf1 .res 0\n", "Range error"),
+        (".struct P\n.res\n", "Expected a byte count"),
+        (".struct P\n.org\n", "Expected an address"),
+        (".struct P\n.org $1000000\n", "Range error"),
+        (".struct P\nf1 .res $1000000\n", "Range error"),
+        (".struct P\nf1 .word K\n", "Constant expression expected"),
+        (".tag Q, 0\n", "Range error"),
+        (
+            ".struct P\nf1 .segment \"X\"\n",
+            "Expected a storage allocator after the field name",
+        ),
+        (".tag 3\n", "Expected an identifier"),
+    ] {
+        assert_eq!(
+            records(source).last().cloned(),
+            Some(Err(message.to_owned())),
+            "{source}"
+        );
+    }
+}
+
+/// A macro's lines read as members where the macro is called inside a
+/// record, as in ca65 V2.19, which reads them in the record.
+#[test]
+fn a_macro_makes_members_inside_a_record() {
+    use crate::lower::Record;
+    let found = records(".macro two\nm1 .byte\nm2 .word\n.endmacro\n.struct S\ntwo\n.endstruct\n");
+    assert!(
+        found.contains(&Ok(Some(Record::Field {
+            name: Some("m2".to_owned()),
+            bytes: 2
+        }))),
+        "{found:?}"
+    );
+    let found = records(".macro two\nm1\nm2 = 4\n.endmacro\n.enum E\ntwo\n.endenum\nm3 = 1\n");
+    assert!(
+        found.contains(&Ok(Some(Record::Enumerator {
+            name: "m1".to_owned(),
+            value: None
+        }))),
+        "{found:?}"
+    );
+    // After the record, the lines read as they would anywhere.
+    assert_eq!(found.last(), Some(&Ok(None)));
 }

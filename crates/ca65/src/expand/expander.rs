@@ -48,7 +48,8 @@ use super::macros::{self, Macro};
 use super::made::{Made, MadeStrings, Strings};
 use super::repeats::{self, Repeat};
 use crate::ast::{Command, Expr, Line, MacroCall, NameRef, SourceFile, Statement, View};
-use crate::parser::parse_prepared;
+use crate::parser::commands::{Shape, shape};
+use crate::parser::{Block, parse_prepared};
 use crate::{Context, Cpu, Mode, ParseError, Profile, Token, kinds, lex, parse_with};
 
 /// Bounds on how much work expansion may do, so a program that never ends
@@ -312,6 +313,10 @@ pub struct Expander {
     /// The texts macro calls made, for
     /// [`macro_call`](Expander::macro_call).
     pub(super) macro_texts: HashSet<ExpansionId>,
+    /// The blocks open at the line being read, from the lines that ran, so
+    /// text parsed on its own reads as it does where it goes: a macro's
+    /// lines inside a `.struct` are members.
+    blocks: Vec<Block>,
     ended: bool,
     finished: bool,
     diagnostics: Vec<(TextId, Diagnostic)>,
@@ -386,6 +391,7 @@ impl Expander {
             files: Vec::new(),
             line_starts: vec![super::locate::line_starts(text)],
             macro_texts: HashSet::new(),
+            blocks: Vec::new(),
             ended: false,
             finished: false,
             diagnostics: Vec::new(),
@@ -431,6 +437,9 @@ impl Expander {
                 self.diagnostics.push((text, problem));
             }
             if let Some(mut active) = self.run(line, text, host) {
+                if !active.label_only {
+                    self.track_block(&active.line);
+                }
                 let range = active.line.syntax().text_range();
                 active.strings = self
                     .strings
@@ -443,6 +452,26 @@ impl Expander {
         }
         self.finish();
         None
+    }
+
+    /// Follows the blocks a line that runs opens or closes: `.struct`,
+    /// `.union`, `.enum`, `.proc` and `.scope`, and their ends.
+    fn track_block(&mut self, line: &Line) {
+        let command = match line.statement() {
+            Some(Statement::Command(command)) => Some(command),
+            Some(Statement::Member(member)) => member.storage(),
+            _ => None,
+        };
+        let Some(word) = command.and_then(|c| c.word()) else {
+            return;
+        };
+        match shape(word.text()) {
+            Some(Shape::Block(block)) => self.blocks.push(block),
+            Some(Shape::EndBlock) => {
+                self.blocks.pop();
+            }
+            _ => {}
+        }
     }
 
     /// Returns the problems found so far, each with the text it is in.
@@ -477,7 +506,13 @@ impl Expander {
         lexical: bool,
     ) -> Result<Source, ParseError> {
         let parse = match tokens {
-            Some(tokens) => parse_prepared(text, tokens, self.profile, &mut Defined(&self.macros))?,
+            Some(tokens) => parse_prepared(
+                text,
+                tokens,
+                self.profile,
+                &mut Defined(&self.macros),
+                &self.blocks,
+            )?,
             None => parse_with(text, self.profile, &mut Defined(&self.macros))?,
         };
         let lines: Vec<Line> = SourceFile::cast(parse.tree().root())

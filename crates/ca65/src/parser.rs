@@ -48,7 +48,7 @@ use lang198x_syntax::{
 use crate::lexer::{Prepared, TokenSource};
 use crate::{Lexer, Mode, Profile, Token, kinds};
 
-mod commands;
+pub(crate) mod commands;
 mod expression;
 
 /// How deeply expressions may nest before the rest of the line is skipped.
@@ -156,22 +156,25 @@ pub fn parse_with(
     profile: Profile,
     context: &mut dyn Context,
 ) -> Result<Parse, ParseError> {
-    parse_from(text, Box::new(Lexer::new(text)), profile, context)
+    parse_from(text, Box::new(Lexer::new(text)), profile, context, &[])
 }
 
 /// Parses `text` from `tokens`, which cover it exactly and are not lexed
-/// again: the text an expansion was made of.
+/// again: the text an expansion was made of. `blocks` are the blocks open
+/// where the text goes, so a macro's lines inside a `.struct` are members.
 pub(crate) fn parse_prepared(
     text: &str,
     tokens: Vec<Token>,
     profile: Profile,
     context: &mut dyn Context,
+    blocks: &[Block],
 ) -> Result<Parse, ParseError> {
     parse_from(
         text,
         Box::new(Prepared(tokens.into_iter())),
         profile,
         context,
+        blocks,
     )
 }
 
@@ -180,6 +183,7 @@ fn parse_from<'t>(
     lexer: Box<dyn TokenSource + 't>,
     profile: Profile,
     context: &mut dyn Context,
+    blocks: &[Block],
 ) -> Result<Parse, ParseError> {
     let mut parser = Parser {
         text,
@@ -198,7 +202,7 @@ fn parse_from<'t>(
         defines: HashSet::new(),
         after_include: false,
         in_macro_body: false,
-        blocks: Vec::new(),
+        blocks: blocks.to_vec(),
     };
     parser.source_file();
     let Parser {
@@ -216,7 +220,7 @@ fn parse_from<'t>(
 
 /// A block whose lines read differently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Block {
+pub(crate) enum Block {
     /// `.proc` or `.scope`, whose lines are ordinary.
     Scope,
     /// `.struct` or `.union`, whose lines may be members without colons.
@@ -301,13 +305,25 @@ impl Parser<'_, '_> {
         self.trivia();
         if self.in_macro_body {
             self.macro_body_line();
-        } else if self.blocks.last() == Some(&Block::Enum) && self.at(kinds::IDENT) {
+        // ca65 calls a macro before it reads a record's member.
+        } else if self.blocks.last() == Some(&Block::Enum)
+            && self.at(kinds::IDENT)
+            && self.next_macro_kind() != Macro::Known
+        {
             self.enum_member();
         } else if self.blocks.last() == Some(&Block::Struct)
             && self.at(kinds::IDENT)
             && self.peek_nth(1) == Some(kinds::CONTROL)
+            && self.next_macro_kind() != Macro::Known
         {
             self.struct_member();
+        } else if self.blocks.last() == Some(&Block::Struct)
+            && self.at(kinds::CONTROL)
+            && commands::is_storage(self.next_text())
+        {
+            self.builder.start_node(kinds::MEMBER);
+            self.command();
+            self.builder.finish_node();
         } else {
             self.unnamed_label();
             if self.definition() {

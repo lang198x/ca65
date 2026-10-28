@@ -521,7 +521,7 @@ proptest! {
         let profile = Profile::CA65_2_19_6502;
         let lexed = crate::lex(&text, Mode::of(profile));
         let from_text = parsed(&text);
-        let prepared = parse_prepared(&text, lexed.tokens().to_vec(), profile, &mut Standalone)
+        let prepared = parse_prepared(&text, lexed.tokens().to_vec(), profile, &mut Standalone, &[])
             .expect("short text always parses");
         let shape = |parse: &Parse| -> Vec<(SyntaxKind, TextRange)> {
             parse

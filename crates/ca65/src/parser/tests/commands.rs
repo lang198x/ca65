@@ -111,14 +111,20 @@ fn struct_members_need_no_colon() {
         nth_line(source, 1),
         "(LINE (MEMBER (NAME xcoord) (COMMAND .word)) NL)"
     );
-    assert_eq!(nth_line(source, 3), "(LINE (COMMAND .byte) NL)");
+    // Storage with no name is a member too, which takes up room.
+    assert_eq!(nth_line(source, 3), "(LINE (MEMBER (COMMAND .byte)) NL)");
     // Storage takes an optional count, `.res` a size, and `.tag` a struct
-    // and an optional count. Structs nest.
-    let counts = ".struct s\n f1 .byte 2\n f2 .res 3\n f3 .tag point, 2\n .struct inner\n f4 .word\n .endstruct\n.endstruct\n";
+    // and an optional count, with no comma: ca65 V2.19 reads a comma there
+    // as the start of a missing count. Structs nest.
+    let counts = ".struct s\n f1 .byte 2\n f2 .res 3\n f3 .tag point 2\n .struct inner\n f4 .word\n .endstruct\n.endstruct\n";
     assert!(problems(counts).is_empty(), "{:?}", problems(counts));
     assert_eq!(
         nth_line(counts, 3),
-        "(LINE (MEMBER (NAME f3) (COMMAND .tag (NAME_REF point) , (LITERAL 2))) NL)"
+        "(LINE (MEMBER (NAME f3) (COMMAND .tag (NAME_REF point) (LITERAL 2))) NL)"
+    );
+    assert_eq!(
+        problems(".struct s\n f3 .tag point, 2\n.endstruct\n").len(),
+        1
     );
     assert_eq!(
         problems(".struct s\n b .res\n.endstruct\n"),

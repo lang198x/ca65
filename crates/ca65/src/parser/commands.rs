@@ -13,7 +13,7 @@ use crate::kinds;
 
 /// How a control command's arguments are read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Shape {
+pub(crate) enum Shape {
     /// Nothing follows: `.endif`, `.code`, `.p02`.
     Bare,
     /// Values separated by commas: `.byte 1, "a"`, `.res 4`, `.if x > 1`.
@@ -257,9 +257,14 @@ const STORAGE: &[&str] = &[
     ".addr", ".byt", ".byte", ".dbyt", ".dword", ".faraddr", ".org", ".res", ".tag", ".word",
 ];
 
+/// Whether `word` allocates storage inside a `.struct` or `.union`.
+pub(super) fn is_storage(word: &str) -> bool {
+    STORAGE.iter().any(|w| w.eq_ignore_ascii_case(word))
+}
+
 /// The shape of the control command `word`, or `None` for a word ca65 does
 /// not know, which the lexer has reported already.
-pub(super) fn shape(word: &str) -> Option<Shape> {
+pub(crate) fn shape(word: &str) -> Option<Shape> {
     SHAPES
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case(word))
@@ -295,9 +300,7 @@ impl Parser<'_, '_> {
         }
         self.builder.start_node(kinds::COMMAND);
         self.bump();
-        if self.blocks.last() == Some(&Block::Struct)
-            && STORAGE.iter().any(|w| w.eq_ignore_ascii_case(&word))
-        {
+        if self.blocks.last() == Some(&Block::Struct) && is_storage(&word) {
             self.storage(&word);
         } else {
             self.arguments(shape, &word);
@@ -308,12 +311,11 @@ impl Parser<'_, '_> {
     /// A storage allocator inside a `.struct` or `.union`, as ca65's
     /// `DoStructInternal` reads it: `.byte` to `.dword` take an optional
     /// count, `.res` and `.org` a value, and `.tag` a struct's name and an
-    /// optional count.
+    /// optional count, with no comma between them.
     fn storage(&mut self, word: &str) {
         if word.eq_ignore_ascii_case(".tag") {
             self.one_name();
-            if self.at(kinds::COMMA) {
-                self.bump_next();
+            if !self.at_line_end() {
                 self.expression();
             }
         } else if word.eq_ignore_ascii_case(".res")

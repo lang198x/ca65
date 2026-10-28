@@ -14,11 +14,13 @@
 mod expr;
 mod instruction;
 mod line;
+mod record;
 mod settings;
 
 pub use expr::expression;
 pub use instruction::instruction;
 pub use line::{Binary, Declared, Item, Lowered, Scope, Segment, Visibility, Visible, line};
+pub use record::{Record, RecordKind};
 pub use settings::CpuStack;
 
 /// The address sizes ca65 gives a value: how many bytes an address needs.
