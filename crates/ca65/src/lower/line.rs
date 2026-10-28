@@ -4,6 +4,7 @@ use asm198x_ir::{BinOp, DataRange, DiagSeverity, Expr as Ir, Operation};
 use lang198x_syntax::{Diagnostic, SyntaxToken};
 
 use super::expr::{self, invalid, unsupported};
+use super::record::{self as records, Record};
 use super::settings::{CpuStack, setting};
 use super::{Known, Size, Value, instruction};
 use crate::Profile;
@@ -44,6 +45,8 @@ pub struct Lowered {
     pub binary: Option<Binary>,
     /// The change the line makes to ca65's stack of CPUs.
     pub cpu: Option<CpuStack>,
+    /// What the line does in a record, or the room a `.tag` makes.
+    pub record: Option<Record>,
 }
 
 /// The bytes of a file, put where the line is, from
@@ -188,6 +191,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
     let mut visibility = None;
     let mut binary = None;
     let mut cpu = None;
+    let mut record = None;
     let mut defined = Vec::new();
     let op = if line.label_only() {
         None
@@ -247,12 +251,25 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
                                     cpu = change;
                                     None
                                 }
-                                None => command_op(&command, line, known)?,
+                                None => match records::record(
+                                    &Statement::Command(command.clone()),
+                                    known,
+                                )? {
+                                    Some(change) => {
+                                        record = Some(change);
+                                        None
+                                    }
+                                    None => command_op(&command, line, known)?,
+                                },
                             },
                         },
                     },
                 },
             },
+            Some(member @ Statement::Member(_)) => {
+                record = records::record(&member, known)?;
+                None
+            }
             Some(_) => {
                 return Err(unsupported(
                     syntax.syntax().text_range(),
@@ -284,6 +301,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
         visibility,
         binary,
         cpu,
+        record,
     })
 }
 
