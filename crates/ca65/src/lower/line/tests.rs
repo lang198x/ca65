@@ -179,7 +179,7 @@ fn emit(op: &Operation, mini: &mut Mini, bytes: &mut Vec<u8>) -> Result<(), Stri
         }
         Operation::AlignTo { modulus, fill } => {
             let n = usize::try_from(align_pad(mini.pc, *modulus)).map_err(|_| out_of_range())?;
-            bytes.extend(std::iter::repeat_n(fill[0], n));
+            bytes.extend(std::iter::repeat_n(fill.first().copied().unwrap_or(0), n));
         }
         Operation::Instruction {
             mnemonic,

@@ -495,6 +495,57 @@ fn study(expr: &Ir, known: &dyn Known) -> Study {
     }
 }
 
+/// What ca65's `StudyExpr` learns of an expression's size, for whether it
+/// has one: a number's, a name's or an operator's, or the default.
+///
+/// They are in order of strength: a name not known yet makes the whole
+/// expression invalid, and then the default wins over any size, unless an
+/// operator that always gives the zero page is applied to it.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Has {
+    Number,
+    Sized,
+    Default,
+}
+
+/// Whether ca65 V2.19 gives `expr` an address size of its own as it reads
+/// it, rather than the default a name not known yet gives.
+pub(super) fn has_size(expr: &Ir, known: &dyn Known) -> bool {
+    has(expr, known) != Has::Default
+}
+
+fn has(expr: &Ir, known: &dyn Known) -> Has {
+    let of = |value: Value| match value {
+        Value::Unknown => Has::Default,
+        Value::Constant(_) => Has::Number,
+        _ => Has::Sized,
+    };
+    match expr {
+        Ir::Num(_) => Has::Number,
+        Ir::Sym(name) => of(known.name(name)),
+        Ir::Pc => of(known.pc()),
+        // These always give the zero page.
+        Ir::Lo(_) | Ir::Hi(_) | Ir::Bank(_) | Ir::LogNot(_) => Has::Sized,
+        Ir::Bin(
+            BinOp::Eq
+            | BinOp::Ne
+            | BinOp::Lt
+            | BinOp::Gt
+            | BinOp::Le
+            | BinOp::Ge
+            | BinOp::LogAnd
+            | BinOp::LogOr
+            | BinOp::LogXor,
+            _,
+            _,
+        ) => Has::Sized,
+        Ir::Bin(_, lhs, rhs) => has(lhs, known).max(has(rhs, known)),
+        Ir::Neg(inner) | Ir::BitNot(inner) | Ir::FixRound(inner) | Ir::TrailingZeros(inner) => {
+            has(inner, known)
+        }
+    }
+}
+
 pub(super) fn invalid(range: TextRange, message: &str) -> Diagnostic {
     Diagnostic::new(DiagnosticKind::Invalid, range, message)
 }

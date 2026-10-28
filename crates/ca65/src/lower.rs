@@ -147,6 +147,16 @@ pub fn size(expr: &asm198x_ir::Expr, known: &dyn Known) -> Size {
     expr::size(expr, known)
 }
 
+/// Whether ca65 V2.19 gives `expr` an address size of its own as it reads
+/// it, rather than the default a name not known yet gives: `<RED` and
+/// `RED + 1` for a constant or label `RED` have one, `RED + 1` for a name
+/// defined further on does not. ca65 checks an equate for a circular
+/// definition at the end only if its value had the default.
+#[must_use]
+pub fn has_size(expr: &asm198x_ir::Expr, known: &dyn Known) -> bool {
+    expr::has_size(expr, known)
+}
+
 /// What is known of `expr` now. Its value if every name in it is a
 /// constant. If it is made from labels in one segment, such as `r - l` or
 /// `l + 1`, what [`Value::Measured`] or [`Value::Placed`] says. Otherwise

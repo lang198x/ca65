@@ -450,9 +450,29 @@ fn no_function_runs_after_end() {
     for source in [
         ".end .sprintf(\"%bad\",0)\n",
         ".ident(\"x\"):.end .sprintf(\"%d\",4294967300)\n",
+        ".define NAME finish\nNAME:.end .sprintf(\"%d\",4294967300)\n",
     ] {
         let mut expander = Expander::new(source, Profile::CA65_2_19_6502).expect("parses");
         while expander.next_line(&mut host).is_some() {}
-        assert!(expander.diagnostics().is_empty(), "{source}");
+        assert!(
+            expander.diagnostics().is_empty(),
+            "{source}: {:?}",
+            expander.diagnostics()
+        );
+    }
+}
+
+#[test]
+fn a_body_scanned_when_it_was_read_keeps_its_problems_past_end() {
+    // Measured: ca65 scans a macro's body as it is defined, so the bad
+    // number is reported though the `.end` before it runs.
+    let mut host = host::TestHost::default();
+    for source in [
+        ".macro stop\nfinish:.end,$100000000\n.endmacro\nstop\n",
+        ".repeat 1\n.end\n.byte <$100000000\n.endrepeat\n",
+    ] {
+        let mut expander = Expander::new(source, Profile::CA65_2_19_6502).expect("parses");
+        while expander.next_line(&mut host).is_some() {}
+        assert_eq!(expander.diagnostics().len(), 1, "{source}");
     }
 }

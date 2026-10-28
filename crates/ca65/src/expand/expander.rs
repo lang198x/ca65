@@ -321,6 +321,8 @@ pub struct Expander {
     /// text parsed on its own reads as it does where it goes: a macro's
     /// lines inside a `.struct` are members.
     blocks: Vec<Block>,
+    /// How many problems had been found when the line being run was read.
+    line_start: usize,
     /// A conditional whose line's label the host has been given, and which
     /// acts when the host asks for the next line.
     deferred: Option<(Command, String, TextId)>,
@@ -399,6 +401,7 @@ impl Expander {
             line_starts: vec![super::locate::line_starts(text)],
             macro_texts: HashSet::new(),
             blocks: Vec::new(),
+            line_start: 0,
             deferred: None,
             ended: false,
             finished: false,
@@ -418,6 +421,7 @@ impl Expander {
             self.conditional(&command, &word, text, host);
         }
         while !self.ended {
+            self.line_start = self.diagnostics.len();
             let Some((line, problems, text)) = self.read() else {
                 break;
             };
@@ -1121,11 +1125,18 @@ impl Expander {
             piece.kind != kinds::STRING && piece.text.eq_ignore_ascii_case(".end")
         }) {
             pieces.truncate(end + 1);
-            // Nor does it scan them, so the problems found there go too.
-            let at = pieces[end].site;
-            self.diagnostics.retain(|(text, problem)| {
-                *text != at.text() || problem.range().start() < at.range().start()
-            });
+            // Nor does it scan them, so the problems found on this line
+            // there go too. A line a define made traces back to the file it
+            // was read from.
+            let site = pieces[end].site;
+            let at = self.provenance.trace(site).unwrap_or(site);
+            let mine = self
+                .diagnostics
+                .split_off(self.line_start.min(self.diagnostics.len()));
+            self.diagnostics
+                .extend(mine.into_iter().filter(|(text, problem)| {
+                    *text != at.text() || problem.range().start() < at.range().start()
+                }));
         }
         if !functions::any(&pieces) {
             return Some((line, problems, text));

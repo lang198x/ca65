@@ -700,9 +700,11 @@ fn command_op(
         }
         ".align" => {
             let (modulus, fill) = count_and_fill(command, known, "the alignment")?;
+            // With no fill of its own, the gap takes the linker's fill, as
+            // `.res` does.
             Operation::AlignTo {
                 modulus,
-                fill: vec![fill.unwrap_or(0)],
+                fill: fill.map(|fill| vec![fill]).unwrap_or_default(),
             }
         }
         ".org" => {
