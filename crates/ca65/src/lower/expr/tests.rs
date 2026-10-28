@@ -144,8 +144,9 @@ fn value_is_a_constant_or_an_address_size() {
 }
 
 /// Labels `l` and `r`, at offsets 0 and 1 into segment 0, `o` at offset 0
-/// into segment 1, and the address `*` at offset 2 into segment 0. All are
-/// absolute.
+/// into segment 1, and the address `*` at offset 2 into segment 0, all
+/// absolute; `q`, which is 3; `k`, a distance of 1; `e`, an absolute
+/// import; and `z`, an import on the zero page.
 struct Placed;
 
 impl Known for Placed {
@@ -165,6 +166,7 @@ impl Known for Placed {
                 size: Size::Absolute,
             },
             "e" => Value::Address(Size::Absolute),
+            "z" => Value::Address(Size::Zero),
             _ => Value::Unknown,
         }
     }
@@ -204,7 +206,6 @@ fn labels_in_one_segment_are_a_known_distance_apart() {
         ("r-l-1+1", 1),
         ("(r-l)*(r-l)", 1),
         ("(r-l)/1", 1),
-        ("(r-l)&3", 1),
         ("(r-l)<<1", 2),
         ("*-l", 2),
         ("k+q", 4),
@@ -220,6 +221,14 @@ fn labels_in_one_segment_are_a_known_distance_apart() {
             segment: 0,
             offset: 1,
             size: Size::Absolute
+        }
+    );
+    // `&` takes the smaller of its sides.
+    assert_eq!(
+        placed("(r-l)&3"),
+        Value::Measured {
+            value: 1,
+            size: Size::Zero
         }
     );
     // `<` makes one byte, whatever the labels' size.
@@ -261,6 +270,43 @@ fn a_distance_takes_its_labels_size() {
         ("r-l", Size::Absolute),
         ("<(r-l)", Size::Zero),
         ("q", Size::Zero),
+    ] {
+        let lowered = expression(&immediate(text), &Placed).expect(text);
+        assert_eq!(super::size(&lowered, &Placed), size, "{text}");
+    }
+}
+
+/// The address size ca65 V2.19 gives each operand, read from its listings.
+/// In names and numbers added, taken away, negated or multiplied by a
+/// number, only the names count. Any other operation counts its numbers
+/// too, except `&`, which takes the smaller side, and `<`, `>`, `^`, the
+/// comparisons and the logical operators, which make one byte.
+#[test]
+fn operands_take_the_size_ca65_studies() {
+    for (text, size) in [
+        ("z+1", Size::Zero),
+        ("z+$100", Size::Zero),
+        ("$100+z", Size::Zero),
+        ("z-$100", Size::Zero),
+        ("z*2", Size::Zero),
+        ("z|$1000", Size::Absolute),
+        ("z&$FF", Size::Zero),
+        ("l&$FF", Size::Zero),
+        ("l=3", Size::Zero),
+        ("l && 1", Size::Zero),
+        ("!l", Size::Zero),
+        ("<l+1", Size::Zero),
+        ("<l+$100", Size::Absolute),
+        ("3&(r-l)", Size::Zero),
+        ("-l", Size::Absolute),
+        ("~z", Size::Zero),
+        ("r-l+$100", Size::Absolute),
+        ("2*(r-l)", Size::Absolute),
+        ("0+(r-l)*(r-l)", Size::Absolute),
+        ("$1234-$1234+r-r", Size::Absolute),
+        ("q|1", Size::Zero),
+        ("l/2", Size::Absolute),
+        ("z<<1", Size::Zero),
     ] {
         let lowered = expression(&immediate(text), &Placed).expect(text);
         assert_eq!(super::size(&lowered, &Placed), size, "{text}");

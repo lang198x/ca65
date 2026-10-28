@@ -124,6 +124,23 @@ pub trait Known {
     }
 }
 
+/// The address size ca65 V2.19 gives `expr`, as its `StudyExpr` works it
+/// out. A value whose names are all constants takes the size its value
+/// needs. Otherwise a number takes the size its value needs and a name its
+/// own; `<`, `>`, `^`, a comparison and the logical operators make one
+/// byte; `&` takes the smaller of its two sides; and every other operation
+/// the larger.
+///
+/// ca65 sizes an instruction's operand by this as it reads the line. It
+/// also refuses data whose value is not known until the link if this size
+/// is bigger than the room the data takes, so `.byte lab` is an error for
+/// a label in a segment whose address is two bytes. An assembler can check
+/// that once every name is known.
+#[must_use]
+pub fn size(expr: &asm198x_ir::Expr, known: &dyn Known) -> Size {
+    expr::size(expr, known)
+}
+
 /// What is known of `expr` now. Its value if every name in it is a
 /// constant. If it is made from labels in one segment, such as `r - l` or
 /// `l + 1`, what [`Value::Measured`] or [`Value::Placed`] says. Otherwise
