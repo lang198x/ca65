@@ -375,25 +375,107 @@ fn map_children(expr: &Ir, map: &mut dyn FnMut(&Ir) -> Ir) -> Ir {
     }
 }
 
-fn structural(expr: &Ir, known: &dyn Known) -> Option<Size> {
-    let of = |value: Value| match value {
-        Value::Constant(value) => Some(Size::of(value)),
-        Value::Address(size) | Value::Placed { size, .. } | Value::Measured { size, .. } => {
-            Some(size)
+/// What ca65 V2.19's `StudyExpr` learns of an expression's address size.
+#[derive(Clone, Copy)]
+struct Study {
+    /// The largest size of the names in it, if any: `None` for numbers alone.
+    names: Option<Size>,
+    /// The size a number in it needs, for numbers alone.
+    number: Option<Size>,
+    /// Whether it is still names and numbers added, taken away, negated or
+    /// multiplied by a number. While it is, its numbers do not count
+    /// towards its size, so `zz + $100` is on the zero page.
+    linear: bool,
+}
+
+impl Study {
+    fn size(self) -> Option<Size> {
+        self.names.or(self.number)
+    }
+
+    /// The result of an operation ca65 cannot fold: the larger of both
+    /// sides, numbers included.
+    fn merged(self, other: Self) -> Self {
+        Self::fixed(self.size().max(other.size()))
+    }
+
+    fn fixed(size: Option<Size>) -> Self {
+        Self {
+            names: size,
+            number: None,
+            linear: false,
         }
-        Value::Unknown => Some(Size::Absolute),
+    }
+}
+
+/// The address size ca65 V2.19's `StudyExpr` gives `expr`, measured with
+/// its listings. In names and numbers added, taken away, negated or
+/// multiplied by a number, only the names count, each by its own size, so
+/// `zz + $100` is on the zero page and `r - l` is absolute. `<`, `>`, `^`, a
+/// comparison and the logical operators make one byte. `&` takes the
+/// smaller of its sides, so `lab & $FF` is on the zero page. Any other
+/// operation takes the larger, numbers included, so `<lab + $100` is
+/// absolute.
+fn structural(expr: &Ir, known: &dyn Known) -> Option<Size> {
+    study(expr, known).size()
+}
+
+fn study(expr: &Ir, known: &dyn Known) -> Study {
+    let number = |value: i64| Study {
+        names: None,
+        number: Some(Size::of(value)),
+        linear: true,
+    };
+    let of = |value: Value| match value {
+        Value::Constant(value) => number(value),
+        Value::Address(size) | Value::Placed { size, .. } | Value::Measured { size, .. } => Study {
+            names: Some(size),
+            number: None,
+            linear: true,
+        },
+        Value::Unknown => Study {
+            names: Some(Size::Absolute),
+            number: None,
+            linear: true,
+        },
     };
     match expr {
-        Ir::Num(_) => None,
+        Ir::Num(value) => number(*value),
         Ir::Sym(name) => of(known.name(name)),
         Ir::Pc => of(known.pc()),
-        Ir::Lo(_) | Ir::Hi(_) | Ir::Bank(_) => Some(Size::Zero),
-        Ir::Bin(_, lhs, rhs) => structural(lhs, known).max(structural(rhs, known)),
-        Ir::Neg(inner)
-        | Ir::BitNot(inner)
-        | Ir::LogNot(inner)
-        | Ir::FixRound(inner)
-        | Ir::TrailingZeros(inner) => structural(inner, known),
+        Ir::Lo(_) | Ir::Hi(_) | Ir::Bank(_) | Ir::LogNot(_) => Study::fixed(Some(Size::Zero)),
+        Ir::Bin(
+            BinOp::Eq
+            | BinOp::Ne
+            | BinOp::Lt
+            | BinOp::Gt
+            | BinOp::Le
+            | BinOp::Ge
+            | BinOp::LogAnd
+            | BinOp::LogOr
+            | BinOp::LogXor,
+            _,
+            _,
+        ) => Study::fixed(Some(Size::Zero)),
+        Ir::Bin(op, lhs, rhs) => {
+            let (lhs, rhs) = (study(lhs, known), study(rhs, known));
+            let both = lhs.linear && rhs.linear;
+            match op {
+                BinOp::Add | BinOp::Sub if both => Study {
+                    names: lhs.names.max(rhs.names),
+                    number: lhs.number.max(rhs.number),
+                    linear: true,
+                },
+                BinOp::Mul if both && lhs.names.is_none() => rhs,
+                BinOp::Mul if both && rhs.names.is_none() => lhs,
+                BinOp::And => Study::fixed(lhs.size().min(rhs.size())),
+                _ => lhs.merged(rhs),
+            }
+        }
+        Ir::Neg(inner) => study(inner, known),
+        Ir::BitNot(inner) | Ir::FixRound(inner) | Ir::TrailingZeros(inner) => {
+            Study::fixed(study(inner, known).size())
+        }
     }
 }
 
