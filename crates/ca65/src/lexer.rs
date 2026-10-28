@@ -253,7 +253,9 @@ impl<'t> Lexer<'t> {
         let mut chars = rest[1..].chars();
         let well_formed = matches!(
             (chars.next(), chars.next()),
-            (Some(c), Some('\'')) if c.is_ascii() && c != '\n' && c != '\r'
+            // ca65 ends a character constant at a zero byte, as its scanner
+            // reads one with a terminator of zero.
+            (Some(c), Some('\'')) if c.is_ascii() && !matches!(c, '\n' | '\r' | '\0')
         );
         if well_formed {
             return 3;
@@ -286,7 +288,7 @@ impl<'t> Lexer<'t> {
 /// Leading zeros are skipped, and only the next 16 digits are read, as in
 /// ca65's buffer. Before taking each digit, a value above `u32::MAX / radix`
 /// is out of range; a digit outside the base is invalid.
-fn digit_led_value(digits: &str, radix: u32) -> Result<u64, &'static str> {
+pub(crate) fn digit_led_value(digits: &str, radix: u32) -> Result<u64, &'static str> {
     let max = u64::from(u32::MAX / radix);
     let significant = digits.trim_start_matches('0');
     let mut value: u64 = 0;

@@ -138,8 +138,8 @@ fn value_is_a_constant_or_an_address_size() {
     };
     assert_eq!(of("q*2"), Value::Constant(6));
     assert_eq!(of("z+1"), Value::Address(Size::Zero));
-    assert_eq!(of("<later"), Value::Address(Size::Zero));
-    assert_eq!(of("later"), Value::Address(Size::Absolute));
+    assert_eq!(of("<later"), Value::Opaque(Size::Zero));
+    assert_eq!(of("later"), Value::Opaque(Size::Absolute));
     assert_eq!(of("q*$100"), Value::Constant(0x300));
 }
 
@@ -241,13 +241,26 @@ fn labels_in_one_segment_are_a_known_distance_apart() {
     );
 }
 
+/// An import cancels itself, and nothing times an import is nothing, as
+/// ca65 V2.19's `StudyExpr` counts imports: `.const(RED-RED)` and
+/// `.const(RED*0)` are true for an imported `RED`, measured.
+#[test]
+fn an_import_counts_as_a_label_does() {
+    let constant =
+        |text: &str| super::constant(&expression(&immediate(text), &Placed).expect(text), &Placed);
+    for (text, value) in [("e-e", 0), ("e*0", 0), ("e+1-e", 1), ("z-z", 0)] {
+        assert_eq!(constant(text), Some(value), "{text}");
+    }
+    assert_eq!(constant("e-z"), None);
+}
+
 /// What ca65 V2.19 does not know until the link: labels in two segments, a
 /// label added to a label, a label in any other operation, and an import.
 #[test]
 fn other_mixes_of_labels_wait_for_the_link() {
     for text in ["o-l", "r+l", "r&$FF-l&$FF", "^r-^l", "l*r", "e-l", "f-l"] {
         assert!(
-            matches!(placed(text), Value::Address(_)),
+            matches!(placed(text), Value::Address(_) | Value::Opaque(_)),
             "{text}: {:?}",
             placed(text)
         );

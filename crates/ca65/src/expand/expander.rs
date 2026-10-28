@@ -220,6 +220,10 @@ struct Source {
     lines: Vec<Line>,
     /// The syntax problems on each line, reported only if it runs.
     line_problems: Vec<Vec<Diagnostic>>,
+    /// The problems the lexer found on each line, reported when the line
+    /// is read, whether it runs or not. ca65 scans a line's tokens as it
+    /// reads them, so nothing after `.end` is scanned.
+    lexical: Vec<Vec<Diagnostic>>,
     next: usize,
     /// For a macro call, how many conditionals were open when it started,
     /// for `.exitmacro`.
@@ -317,6 +321,9 @@ pub struct Expander {
     /// text parsed on its own reads as it does where it goes: a macro's
     /// lines inside a `.struct` are members.
     blocks: Vec<Block>,
+    /// A conditional whose line's label the host has been given, and which
+    /// acts when the host asks for the next line.
+    deferred: Option<(Command, String, TextId)>,
     ended: bool,
     finished: bool,
     diagnostics: Vec<(TextId, Diagnostic)>,
@@ -392,6 +399,7 @@ impl Expander {
             line_starts: vec![super::locate::line_starts(text)],
             macro_texts: HashSet::new(),
             blocks: Vec::new(),
+            deferred: None,
             ended: false,
             finished: false,
             diagnostics: Vec::new(),
@@ -406,6 +414,9 @@ impl Expander {
     /// Returns the next line to assemble, or `None` when the program is
     /// done. `host` answers the conditions met on the way.
     pub fn next_line(&mut self, host: &mut dyn Host) -> Option<ActiveLine> {
+        if let Some((command, word, text)) = self.deferred.take() {
+            self.conditional(&command, &word, text, host);
+        }
         while !self.ended {
             let Some((line, problems, text)) = self.read() else {
                 break;
@@ -524,25 +535,30 @@ impl Expander {
             Vec::new()
         };
         let mut line_problems = vec![Vec::new(); lines.len()];
+        let mut lexical_problems = vec![Vec::new(); lines.len()];
         for diagnostic in parse.diagnostics() {
-            if lexed.contains(diagnostic) {
-                if lexical {
-                    self.diagnostics.push((id, diagnostic.clone()));
+            let start = diagnostic.range().start();
+            let index = lines
+                .partition_point(|line| line.syntax().text_range().end() <= start)
+                .min(lines.len().saturating_sub(1));
+            let found = if lexed.contains(diagnostic) {
+                if !lexical {
+                    continue;
                 }
+                &mut lexical_problems
             } else {
-                let start = diagnostic.range().start();
-                let index = lines
-                    .partition_point(|line| line.syntax().text_range().end() <= start)
-                    .min(lines.len().saturating_sub(1));
-                if let Some(problems) = line_problems.get_mut(index) {
-                    problems.push(diagnostic.clone());
-                }
+                &mut line_problems
+            };
+            match found.get_mut(index) {
+                Some(problems) => problems.push(diagnostic.clone()),
+                None => self.diagnostics.push((id, diagnostic.clone())),
             }
         }
         Ok(Source {
             text: id,
             lines,
             line_problems,
+            lexical: lexical_problems,
             next: 0,
             call_depth,
             repeat: None,
@@ -560,6 +576,11 @@ impl Expander {
                     .get(source.next)
                     .cloned()
                     .unwrap_or_default();
+                if let Some(found) = source.lexical.get(source.next) {
+                    let text = source.text;
+                    self.diagnostics
+                        .extend(found.iter().map(|problem| (text, problem.clone())));
+                }
                 source.next += 1;
                 let unfinished = source.repeat.is_some()
                     && source.next == source.lines.len()
@@ -798,9 +819,15 @@ impl Expander {
                     Some(word) if is_conditional(word) => {
                         // ca65 defines a label on a conditional's line when
                         // the line is read while lines run, before the
-                        // conditional acts.
-                        self.conditional(&command, word, text, host);
-                        return labelled(line, text);
+                        // conditional acts. So the host has the label first,
+                        // and the conditional acts when it asks again.
+                        let label = labelled(line, text);
+                        if label.is_some() {
+                            self.deferred = Some((command, word.to_owned(), text));
+                        } else {
+                            self.conditional(&command, word, text, host);
+                        }
+                        return label;
                     }
                     // ca65 defines a label on these lines too.
                     Some(".end") => {
@@ -1000,8 +1027,13 @@ impl Expander {
                 self.leave();
                 continue;
             };
-            source.next += 1;
             let text = source.text;
+            if let Some(found) = source.lexical.get(source.next) {
+                self.diagnostics
+                    .extend(found.iter().map(|problem| (text, problem.clone())));
+            }
+            let source = self.sources.last_mut()?;
+            source.next += 1;
             if let Some((line, _, text)) = self.expand_defines(line, Vec::new(), text, true) {
                 return Some((line, text));
             }
@@ -1075,7 +1107,7 @@ impl Expander {
         if macros::command_word(&line).as_deref() == Some(".define") {
             return Some((line, problems, text));
         }
-        let pieces: Vec<Piece> = line
+        let mut pieces: Vec<Piece> = line
             .syntax()
             .descendants()
             .filter_map(SyntaxElement::into_token)
@@ -1084,6 +1116,17 @@ impl Expander {
                 self.strings.piece(&t, self.copied(from), from)
             })
             .collect();
+        // ca65 reads no token after `.end`, so runs no function there.
+        if let Some(end) = pieces.iter().position(|piece| {
+            piece.kind != kinds::STRING && piece.text.eq_ignore_ascii_case(".end")
+        }) {
+            pieces.truncate(end + 1);
+            // Nor does it scan them, so the problems found there go too.
+            let at = pieces[end].site;
+            self.diagnostics.retain(|(text, problem)| {
+                *text != at.text() || problem.range().start() < at.range().start()
+            });
+        }
         if !functions::any(&pieces) {
             return Some((line, problems, text));
         }

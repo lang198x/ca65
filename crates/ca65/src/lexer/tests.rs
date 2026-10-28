@@ -124,7 +124,7 @@ fn a_leading_digit_takes_every_hex_digit() {
 #[test]
 fn numbers_keep_32_bits() {
     // Measured: each line is accepted or refused by ca65's scanner as here.
-    // `4294967296` passes the scanner, and the directive refuses it later.
+    // A decimal number passes the scanner up to 4294967299; see `number`.
     for fits in [
         "4294967295",
         "4294967296",
@@ -189,8 +189,9 @@ fn character_constants() {
 #[test]
 fn a_bad_character_constant_runs_to_the_line_end() {
     // ca65: "Illegal character constant" for each of these, and it reads on
-    // to the end of the line. `é` is two bytes, measured too.
-    for bad in ["'ab', 1", "''", "'", "'é'"] {
+    // to the end of the line. `é` is two bytes, and a zero byte ends the
+    // constant, both measured too.
+    for bad in ["'ab', 1", "''", "'", "'é'", "'\0'"] {
         assert_eq!(tokens(bad), [format!("CHAR {bad}")], "{bad}");
         assert_eq!(
             problems(bad),

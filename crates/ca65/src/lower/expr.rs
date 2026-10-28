@@ -272,15 +272,24 @@ pub(super) fn plain(expr: &Ir, known: &dyn Known) -> Option<i64> {
     expr.eval_with(&value, pc, 0).ok()
 }
 
-/// A value as ca65 keeps it while it reads: a number plus a sum of labels,
-/// each counted some number of times, by segment.
+/// What a [`Sum`] counts: a segment's start, or an import.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Term {
+    /// The start of the segment the assembler numbers so.
+    Segment(u32),
+    /// A name the linker gives a value, as written.
+    Import(String),
+}
+
+/// A value as ca65 keeps it while it reads: a number plus a sum of labels
+/// and imports, each counted some number of times.
 #[derive(Debug, Default)]
 pub(super) struct Sum {
     /// The number, with each label's offset into its segment counted in.
     pub(super) value: i64,
-    /// How many times each segment's start is counted, for those that do
-    /// not cancel out.
-    pub(super) terms: Vec<(u32, i64)>,
+    /// How many times each segment's start or import is counted, for those
+    /// that do not cancel out.
+    pub(super) terms: Vec<(Term, i64)>,
 }
 
 impl Sum {
@@ -297,10 +306,10 @@ impl Sum {
 
     fn add(mut self, other: Self, sign: i64) -> Option<Self> {
         self.value = self.value.checked_add(other.value.checked_mul(sign)?)?;
-        for (segment, count) in other.terms {
-            match self.terms.iter_mut().find(|(s, _)| *s == segment) {
+        for (term, count) in other.terms {
+            match self.terms.iter_mut().find(|(mine, _)| *mine == term) {
                 Some((_, mine)) => *mine = mine.checked_add(count.checked_mul(sign)?)?,
-                None => self.terms.push((segment, count.checked_mul(sign)?)),
+                None => self.terms.push((term, count.checked_mul(sign)?)),
             }
         }
         self.terms.retain(|&(_, count)| count != 0);
@@ -321,20 +330,24 @@ impl Sum {
 /// negated and multiplied by a known number, as ca65 allows. Any other
 /// operation needs a known value on each side.
 pub(super) fn linear(expr: &Ir, known: &dyn Known) -> Option<Sum> {
-    let of = |value: Value| match value {
+    let of = |value: Value, name: Option<&str>| match value {
         Value::Constant(value) | Value::Measured { value, .. } => Some(Sum::number(value)),
         Value::Placed {
             segment, offset, ..
         } => Some(Sum {
             value: offset,
-            terms: vec![(segment, 1)],
+            terms: vec![(Term::Segment(segment), 1)],
         }),
-        Value::Address(_) | Value::Unknown => None,
+        Value::Address(_) => Some(Sum {
+            value: 0,
+            terms: vec![(Term::Import(name?.to_owned()), 1)],
+        }),
+        Value::Opaque(_) | Value::Unknown => None,
     };
     match expr {
         Ir::Num(value) => Some(Sum::number(*value)),
-        Ir::Sym(name) => of(known.name(name)),
-        Ir::Pc => of(known.pc()),
+        Ir::Sym(name) => of(known.name(name), Some(name)),
+        Ir::Pc => of(known.pc(), None),
         Ir::Neg(inner) => linear(inner, known)?.scale(-1),
         Ir::Bin(BinOp::Add, lhs, rhs) => linear(lhs, known)?.add(linear(rhs, known)?, 1),
         Ir::Bin(BinOp::Sub, lhs, rhs) => linear(lhs, known)?.add(linear(rhs, known)?, -1),
@@ -428,7 +441,10 @@ fn study(expr: &Ir, known: &dyn Known) -> Study {
     };
     let of = |value: Value| match value {
         Value::Constant(value) => number(value),
-        Value::Address(size) | Value::Placed { size, .. } | Value::Measured { size, .. } => Study {
+        Value::Address(size)
+        | Value::Opaque(size)
+        | Value::Placed { size, .. }
+        | Value::Measured { size, .. } => Study {
             names: Some(size),
             number: None,
             linear: true,
