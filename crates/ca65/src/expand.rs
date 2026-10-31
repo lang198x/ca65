@@ -20,7 +20,7 @@ mod made;
 mod repeats;
 
 pub use expander::{ActiveLine, Expander, Host, IncludedFile, Limits};
-pub use locate::Location;
+pub use locate::{FrameAt, Location, MacroFrame, Reading};
 
 #[cfg(test)]
 mod tests;

@@ -47,6 +47,8 @@ const MEASURED: &[(&str, Want)] = &[
         Bytes(&[2]),
     ),
     (".ifndef v\n.byte 1\n.endif\n", Bytes(&[1])),
+    // Measured: a `.macro` in a skipped branch opens nothing.
+    (".if 0\n.macro emit\n.endif\n.byte 3\n", Bytes(&[3])),
     // The label on a conditional's line is defined before it acts.
     (
         "mark: .ifdef mark\n.byte 7\n.else\n.byte 8\n.endif\n",
@@ -475,4 +477,19 @@ fn a_body_scanned_when_it_was_read_keeps_its_problems_past_end() {
         while expander.next_line(&mut host).is_some() {}
         assert_eq!(expander.diagnostics().len(), 1, "{source}");
     }
+}
+
+#[test]
+fn a_macros_line_knows_each_call_it_came_through() {
+    let source = ".macro inner\n nop\n.endmacro\n.macro outer\n inner\n.endmacro\nouter\n";
+    let (expander, lines) = active_lines(source);
+    let frames = expander.macro_frames(lines[0].span());
+    let names: Vec<&str> = frames.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["inner", "outer"]);
+    let line = |span| expander.locate(span).map(|at| at.line);
+    assert_eq!(line(frames[0].defined), Some(1));
+    assert_eq!(line(frames[1].called), Some(7));
+    assert_eq!(line(frames[1].defined), Some(4));
+    let (expander, lines) = active_lines(" nop\n");
+    assert!(expander.macro_frames(lines[0].span()).is_empty());
 }
