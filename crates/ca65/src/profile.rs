@@ -149,6 +149,7 @@ impl Cpu {
                 | Self::Wdc65c02
                 | Self::Csg65ce02
                 | Self::Csg4510
+                | Self::HuC6280
         )
     }
 
