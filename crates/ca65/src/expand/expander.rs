@@ -677,13 +677,12 @@ impl Expander {
     }
 
     /// The CPU commands, which change how the lines after them are read:
-    /// `.setcpu`, `.p02`, `.p4510`, `.pushcpu` and `.popcpu`. A CPU this
-    /// crate does not model, and a `.popcpu` with nothing to pop, are left
+    /// `.setcpu`, each CPU's `.P*` command, `.pushcpu` and `.popcpu`. A name
+    /// `.setcpu` does not know, and a `.popcpu` with nothing to pop, are left
     /// for lowering to report.
     fn choose_cpu(&mut self, command: &Command, word: &str, text: TextId) {
         let cpu = match word {
-            ".p02" => Some(Cpu::Mos6502),
-            ".p4510" => Some(Cpu::Csg4510),
+            word if Cpu::chosen_by(word).is_some() => Cpu::chosen_by(word),
             ".setcpu" => command.values().next().and_then(|value| {
                 let Expr::Literal(literal) = value else {
                     return None;
@@ -1556,11 +1555,8 @@ impl Expander {
             ".ifnref" => name.is_some_and(|n| !host.is_referenced(&n)),
             ".ifblank" => command.tokens().is_none(),
             ".ifnblank" => command.tokens().is_some(),
-            ".ifp02" => self.mode.cpu() == Cpu::Mos6502,
-            ".ifp4510" => self.mode.cpu() == Cpu::Csg4510,
-            // Every other CPU test asks about a CPU this crate does not
-            // model yet, so none is the current one.
-            _ => false,
+            // `.ifp02`, `.ifp816` and the rest ask about the CPU in force.
+            word => Cpu::asked_by(word).is_some_and(|cpu| cpu == self.mode.cpu()),
         }
     }
 

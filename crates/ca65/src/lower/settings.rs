@@ -27,27 +27,6 @@ pub enum CpuStack {
     Pop,
 }
 
-/// The CPUs ca65 V2.19 knows, as `.setcpu` spells them, in any case.
-const CPUS: &[&str] = &[
-    "none", "6502", "6502X", "6502DTV", "65SC02", "65C02", "65816", "sweet16", "huc6280", "m740",
-    "4510", "45GS02", "W65C02", "65CE02",
-];
-
-/// The commands that choose a CPU other than the 6502.
-const OTHER_CPUS: &[&str] = &[
-    ".p02x",
-    ".p45gs02",
-    ".p6280",
-    ".p816",
-    ".pc02",
-    ".pce02",
-    ".pdtv",
-    ".pm740",
-    ".psc02",
-    ".psweet16",
-    ".pwc02",
-];
-
 /// What a setting command does to the CPU stack, as `Some`, if `command`
 /// is one. `None` means it is some other command.
 pub(super) fn setting(
@@ -63,9 +42,9 @@ pub(super) fn setting(
     let values: Vec<Expr> = command.values().collect();
     match word.as_str() {
         // The expander follows the CPU, and each line it hands on says which
-        // is in force.
-        ".p02" | ".p4510" => {}
-        word if OTHER_CPUS.contains(&word) => {
+        // is in force. A CPU lowering does not handle yet is refused here.
+        word if crate::Cpu::chosen_by(word).is_some_and(crate::Cpu::lowered) => {}
+        word if crate::Cpu::chosen_by(word).is_some() => {
             return Err(unsupported(
                 range,
                 &format!("`{word}`, which chooses another CPU,"),
@@ -78,11 +57,14 @@ pub(super) fn setting(
             }
             .ok_or_else(|| invalid(range, "`.setcpu` takes the CPU's name in quotes"))?;
             let name = String::from_utf8_lossy(&name).into_owned();
-            if crate::Cpu::named(&name).is_none() {
-                if CPUS.iter().any(|cpu| cpu.eq_ignore_ascii_case(&name)) {
+            match crate::Cpu::named(&name) {
+                Some(cpu) if cpu.lowered() => {}
+                // ca65 knows `none` too, a CPU with no instructions.
+                Some(_) => return Err(unsupported(range, &format!("the CPU `{name}`"))),
+                None if name.eq_ignore_ascii_case("none") => {
                     return Err(unsupported(range, &format!("the CPU `{name}`")));
                 }
-                return Err(invalid(range, "CPU not supported"));
+                None => return Err(invalid(range, "CPU not supported")),
             }
         }
         ".pushcpu" => return Ok(Some(Some(CpuStack::Push))),

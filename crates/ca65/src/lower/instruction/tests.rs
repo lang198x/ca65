@@ -318,3 +318,13 @@ fn a_4510_instruction_is_not_a_6502_one() {
     assert!(lowered("bbr0 $12,$10", &Names::default()).is_err());
     assert!(lowered("lbne $1003", &Names::default()).is_err());
 }
+
+#[test]
+fn an_instruction_for_a_cpu_not_lowered_yet_is_refused_by_name() {
+    let profile = Profile::CA65_2_19_6502.with_cpu(Cpu::Wdc65816);
+    let Err(error) = lowered_on(profile, "nop", &Names::default()) else {
+        panic!("the 65816 is not lowered yet");
+    };
+    assert!(error.contains("`65816`"), "{error}");
+    assert!(error.contains("not lowered yet"), "{error}");
+}
