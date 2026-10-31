@@ -604,6 +604,13 @@ impl Parser<'_, '_> {
                 self.bump();
                 self.expression();
                 self.builder.finish_node();
+                // `#mask, address`, which the HuC6280's `TST` takes.
+                if self.next_kind() == Some(kinds::COMMA) {
+                    self.bump_next();
+                    self.builder.finish_node();
+                    self.operand();
+                    return;
+                }
             }
             Some(kinds::REGISTER) if self.next_text().eq_ignore_ascii_case("a") => {
                 self.bump_next();

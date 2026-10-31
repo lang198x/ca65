@@ -93,6 +93,28 @@ pub fn instruction(
     if has("zeropage,relative") {
         return bit_branch(&mnemonic, &operands, range, known);
     }
+    if has("block") {
+        return block_transfer(&mnemonic, &operands, range, known);
+    }
+    if has("immediate,zeropage") {
+        return test(&mnemonic, &operands, range, known);
+    }
+    // The HuC6280's `TAMn` and `TMAn` are `TAM` and `TMA` with bit `n` set.
+    if cpu == Cpu::HuC6280
+        && let Some((name, bit)) = mapping_register(&mnemonic)
+    {
+        if let Some(extra) = operands.first() {
+            return Err(invalid(
+                extra.syntax().text_range(),
+                "expected the end of the line",
+            ));
+        }
+        return Ok(Operation::Instruction {
+            mnemonic: name.to_owned(),
+            mode: "immediate",
+            operands: vec![Ir::Num(1 << bit)],
+        });
+    }
     let operand = match operands.as_slice() {
         [] => None,
         [operand] => Some(operand),
@@ -130,6 +152,15 @@ pub fn instruction(
         mode
     };
     let form = find(mode).ok_or_else(illegal)?;
+    // ca65 lets `TMA` read one mapping register at a time, so its value
+    // must have one bit set, or none. A value not known yet is left alone.
+    if cpu == Cpu::HuC6280
+        && mnemonic == "TMA"
+        && let Some(value) = value.as_ref().and_then(|v| expr::constant(v, known))
+        && value & value.wrapping_sub(1) != 0
+    {
+        return Err(invalid(range, "Argument of TMA must be a power of two"));
+    }
     // A 65CE02 long branch counts from its opcode plus two, where the
     // shared encoder counts from the end of the instruction, as the
     // 65816's do; the target carries the difference. ACME does the same.
@@ -167,6 +198,7 @@ pub fn sets(cpu: Cpu) -> (&'static InstructionSet, Option<&'static InstructionSe
         Cpu::Wdc65c02 => Some(&isa198x::mos65c02::WDC_SET),
         Cpu::Csg65ce02 => Some(&isa198x::csg65ce02::SET),
         Cpu::Csg4510 => Some(&isa198x::csg65ce02::CSG4502_SET),
+        Cpu::HuC6280 => Some(&isa198x::huc6280::SET),
         _ => None,
     };
     (&isa198x::mos6502::SET, extension)
@@ -181,6 +213,121 @@ fn form(cpu: Cpu, mnemonic: &str, mode: &str) -> Option<&'static isa198x::Form> 
         .or_else(|| base.find_form(mnemonic, mode))
 }
 
+/// `TAMn` or `TMAn`: the instruction it spells, and the bit `n`.
+fn mapping_register(mnemonic: &str) -> Option<(&'static str, u32)> {
+    let (name, bit) = match mnemonic.get(..3)? {
+        "TAM" => ("TAM", mnemonic.get(3..)?),
+        "TMA" => ("TMA", mnemonic.get(3..)?),
+        _ => return None,
+    };
+    match bit.as_bytes() {
+        [digit @ b'0'..=b'7'] => Some((name, u32::from(digit - b'0'))),
+        _ => None,
+    }
+}
+
+/// A HuC6280 block transfer, such as `TII source, destination, length`,
+/// as ca65's `PutBlockTransfer` reads it: three values, each a word.
+fn block_transfer(
+    mnemonic: &str,
+    operands: &[Operand],
+    range: TextRange,
+    known: &dyn Known,
+) -> Result<Operation, Diagnostic> {
+    let [source, destination, length] = operands else {
+        let message = if operands.len() > 3 {
+            "expected the end of the line"
+        } else {
+            "expected `,`"
+        };
+        let at = operands.get(3).map_or(range, |o| o.syntax().text_range());
+        return Err(invalid(at, message));
+    };
+    Ok(Operation::Instruction {
+        mnemonic: mnemonic.to_owned(),
+        mode: "block",
+        operands: vec![
+            plain(source, known)?,
+            plain(destination, known)?,
+            plain(length, known)?,
+        ],
+    })
+}
+
+/// The HuC6280's `TST #mask, address`, as ca65's `PutTST` reads it: an
+/// immediate value, then an address read as any other instruction's is.
+fn test(
+    mnemonic: &str,
+    operands: &[Operand],
+    range: TextRange,
+    known: &dyn Known,
+) -> Result<Operation, Diagnostic> {
+    let illegal = |range| {
+        invalid(
+            range,
+            "this addressing mode is not one this instruction has",
+        )
+    };
+    let Some((first, rest)) = operands.split_first() else {
+        return Err(illegal(range));
+    };
+    let mask = first
+        .immediate()
+        .filter(|_| first.address_size().is_none())
+        .and_then(|immediate| immediate.expr())
+        .ok_or_else(|| illegal(first.syntax().text_range()))?;
+    let mask = expr::expression(&mask, known)?;
+    let address = match rest {
+        [address] => address,
+        [] => return Err(invalid(range, "expected `,`")),
+        [_, extra, ..] => {
+            return Err(invalid(
+                extra.syntax().text_range(),
+                "expected the end of the line",
+            ));
+        }
+    };
+    let form = |mode: &str| form(Cpu::HuC6280, mnemonic, &format!("immediate,{mode}"));
+    let has = |mode: &str| form(mode).is_some();
+    let address_range = address.syntax().text_range();
+    let (mode, value) =
+        choose(address, &has, known).map_err(|e| e.unwrap_or_else(|| illegal(address_range)))?;
+    let form = form(mode).ok_or_else(|| illegal(address_range))?;
+    Ok(Operation::Instruction {
+        mnemonic: mnemonic.to_owned(),
+        mode: form.mode,
+        operands: [Some(mask), value].into_iter().flatten().collect(),
+    })
+}
+
+/// A value written as ca65's `Expression` reads it, where `(1)` is a value
+/// in parentheses, not an indirect address, and nothing else is allowed.
+fn plain(operand: &Operand, known: &dyn Known) -> Result<Ir, Diagnostic> {
+    let written = match operand.indirect() {
+        Some(indirect)
+            if indirect.inner_register().is_none()
+                && indirect.outer_register().is_none()
+                && operand.address_size().is_none() =>
+        {
+            indirect.expr()
+        }
+        _ if operand.address_size().is_none()
+            && operand.index().is_none()
+            && operand.immediate().is_none() =>
+        {
+            operand.expr()
+        }
+        _ => None,
+    };
+    let written = written.ok_or_else(|| {
+        invalid(
+            operand.syntax().text_range(),
+            "this addressing mode is not one this instruction has",
+        )
+    })?;
+    expr::expression(&written, known)
+}
+
 /// A Rockwell bit branch, `BBRn zp, target` or `BBSn zp, target`, as ca65's
 /// `PutBitBranch` reads it: two values, each an expression.
 fn bit_branch(
@@ -192,32 +339,7 @@ fn bit_branch(
     let [zero, target] = operands else {
         return Err(invalid(range, "expected `,`"));
     };
-    let value = |operand: &Operand| {
-        // `(1)` is a value in parentheses here, not an indirect address.
-        let written = match operand.indirect() {
-            Some(indirect)
-                if indirect.inner_register().is_none()
-                    && indirect.outer_register().is_none()
-                    && operand.address_size().is_none() =>
-            {
-                indirect.expr()
-            }
-            _ if operand.address_size().is_none()
-                && operand.index().is_none()
-                && operand.immediate().is_none() =>
-            {
-                operand.expr()
-            }
-            _ => None,
-        };
-        let written = written.ok_or_else(|| {
-            invalid(
-                operand.syntax().text_range(),
-                "this addressing mode is not one this instruction has",
-            )
-        })?;
-        expr::expression(&written, known)
-    };
+    let value = |operand: &Operand| plain(operand, known);
     Ok(Operation::Instruction {
         mnemonic: mnemonic.to_owned(),
         mode: "zeropage,relative",

@@ -42,6 +42,10 @@ fn lowered(source: &str, known: &dyn Known) -> Result<Operation, String> {
 /// The one instruction in `source`, lowered under `profile`.
 fn lowered_on(profile: Profile, source: &str, known: &dyn Known) -> Result<Operation, String> {
     let parse = parse(&format!("{source}\n"), profile).expect("parses");
+    // A line the parser refuses never reaches lowering.
+    if let Some(problem) = parse.diagnostics().first() {
+        return Err(problem.message().to_owned());
+    }
     let line = SourceFile::cast(parse.tree().root())
         .and_then(|file| file.lines().next())
         .expect("a line");
@@ -309,6 +313,66 @@ fn every_measured_4510_line_matches_ca65() {
         let got = lowered_on(Profile::CA65_2_19_4510, source, &Names::default())
             .ok()
             .and_then(|op| encode_on(Cpu::Csg4510, &op, &|_| None));
+        assert_eq!(got.as_deref(), hex, "{source}");
+    }
+}
+
+/// Lines measured on ca65 V2.19 under `.setcpu "huc6280"` and `.org 0`.
+/// `None` is a line ca65 refused, with its message.
+const MEASURED_HUC6280: &[(&str, Option<&str>)] = &[
+    ("tam0", Some("5301")),
+    ("tam7", Some("5380")),
+    ("tma3", Some("4308")),
+    ("tam3 #1", None), // Expected `end-of-line` but found `#`
+    ("tam #$80", Some("5380")),
+    ("tma #$04", Some("4304")),
+    ("tma #3", None), // Argument of TMA must be a power of two
+    ("tma #0", Some("4300")),
+    ("tma #$100", None), // Range error (256 not in [0..255])
+    ("tst #$12,$EA", Some("8312ea")),
+    ("tst #$12,$EAEA", Some("9312eaea")),
+    ("tst #$12,$EA,x", Some("a312ea")),
+    ("tst #$12,$EAEA,x", Some("b312eaea")),
+    ("tst #$12,a:$EA", Some("9312ea00")),
+    ("tst #$12,z:$EAEA", None), // Illegal addressing mode
+    ("tst #$12,$EA,y", None),   // Illegal addressing mode
+    ("tst #$12,($EA)", None),   // Illegal addressing mode
+    ("tst $12,$EA", None),      // Invalid addressing mode
+    ("tst #$12", None),         // Expected `,` but found `end-of-line`
+    ("tst #$12,$EA,x,y", None), // Expected `end-of-line` but found `,`
+    ("tst #$123,$EA", None),    // Range error (291 not in [0..255])
+    ("tst #$12,$12345", None),  // Illegal addressing mode
+    ("tst z:#$12,$EA", None),   // Invalid addressing mode
+    ("tii $1234,$5678,$9abc", Some("7334127856bc9a")),
+    ("tii ($1234),$5678,($9abc)", Some("7334127856bc9a")),
+    ("tii $1234,$5678", None), // Expected `,` but found `end-of-line`
+    ("tii $1234,$5678,$9abc,$1", None), // Expected `end-of-line` but found `,`
+    ("tii #$1234,$5678,$9abc", None), // Expected an expression but found `#`
+    ("tii $12345,$5678,$9abc", None), // Range error (74565 not in [0..65535])
+    ("tii $1234,$5678,$1234,x", None), // Expected `end-of-line` but found `,`
+    ("tai a:$1234,$5678,$9abc", None), // Expected an expression but found `a:`
+    ("st0 #$12", Some("0312")),
+    ("st1 #$12", Some("1312")),
+    ("st2 #$12", Some("2312")),
+    ("bsr 2", Some("4400")),
+    ("csl", Some("54")),
+    ("csh", Some("d4")),
+    ("set", Some("f4")),
+    ("sax", Some("22")),
+    ("say", Some("42")),
+    ("sxy", Some("02")),
+    ("cla", Some("62")),
+    ("clx", Some("82")),
+    ("cly", Some("c2")),
+];
+
+#[test]
+fn every_measured_huc6280_line_matches_ca65() {
+    let profile = Profile::CA65_2_19_6502.with_cpu(Cpu::HuC6280);
+    for &(source, hex) in MEASURED_HUC6280 {
+        let got = lowered_on(profile, source, &Names::default())
+            .ok()
+            .and_then(|op| encode_on(Cpu::HuC6280, &op, &|_| None));
         assert_eq!(got.as_deref(), hex, "{source}");
     }
 }
