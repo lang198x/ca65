@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.16](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.15...lang198x-ca65-v0.0.16) - 2026-10-31
+
+### Added
+
+- read and lower the 4510 as ca65 V2.19 does
+- tell the host where ca65 reports a problem on a line
+
+### Fixed
+
+- study sizes, alignment fill and .end as ca65 V2.19 does
+- follow ca65 V2.19 on the gaps the walk's switch found
+
 ## [0.0.15](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.14...lang198x-ca65-v0.0.15) - 2026-10-28
 
 ### Fixed
