@@ -118,7 +118,8 @@ impl TestHost {
                     Some(".byte") => 1,
                     Some(".word") => 2,
                     // The expander follows the CPU itself.
-                    Some(".setcpu" | ".p02" | ".p4510" | ".pushcpu" | ".popcpu") => return,
+                    Some(".setcpu" | ".pushcpu" | ".popcpu") => return,
+                    Some(word) if crate::Cpu::chosen_by(word).is_some() => return,
                     other => return self.problems.push(format!("no command {other:?} here")),
                 };
                 command.values().try_for_each(|value| {

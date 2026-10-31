@@ -59,6 +59,12 @@ pub fn instruction(
         .map(|t| t.text().to_ascii_uppercase())
         .ok_or_else(|| invalid(range, "expected a mnemonic"))?;
     let cpu = Mode::of(profile).cpu();
+    if !cpu.lowered() {
+        return Err(super::expr::unsupported(
+            range,
+            &format!("an instruction for the `{}`", cpu.name()),
+        ));
+    }
     // ca65's 4510 table spells some instructions twice: `PHD` is `PHW`, and
     // `INA` and `DEA` are `INC` and `DEC` of the accumulator.
     let mnemonic = match (cpu, written.as_str()) {

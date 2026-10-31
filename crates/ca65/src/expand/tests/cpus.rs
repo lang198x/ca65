@@ -86,3 +86,34 @@ fn a_repeat_or_macro_keeps_the_cpu_it_was_collected_under() {
     let source = ".p4510\n.macro m\n lda ($12),z\n.endmacro\n.p02\nm\n";
     assert_eq!(registers(source), [true]);
 }
+
+#[test]
+fn each_cpu_test_asks_about_its_own_cpu() {
+    // Measured: under each CPU's command, only that CPU's `.IFP*` holds.
+    for (index, cpu) in Cpu::ALL.into_iter().enumerate() {
+        let tests: String = Cpu::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(n, other)| format!(".if{}\n.byte {n}\n.endif\n", &other.command()[1..]))
+            .collect();
+        let source = format!("{}\n{tests}", cpu.command().to_ascii_uppercase());
+        assert_eq!(
+            super::run(&source),
+            Ok(vec![u8::try_from(index).expect("small")]),
+            "{}",
+            cpu.name()
+        );
+    }
+}
+
+#[test]
+fn setcpu_names_every_cpu_in_any_case() {
+    for cpu in Cpu::ALL {
+        let source = format!(".setcpu \"{}\"\n nop\n", cpu.name().to_ascii_uppercase());
+        let (got, _) = cpus(&source);
+        assert_eq!(got.last(), Some(&cpu), "{}", cpu.name());
+    }
+    // A name ca65 does not know leaves the CPU as it was.
+    let (got, _) = cpus(".setcpu \"6510\"\n nop\n");
+    assert_eq!(got, [SIX, SIX]);
+}
