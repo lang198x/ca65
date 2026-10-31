@@ -12,6 +12,7 @@ use crate::{Cpu, Profile, parse};
 
 mod forms;
 mod forms_4510;
+mod forms_relatives;
 
 /// What the tests' assembler knows: names, and the address.
 #[derive(Default)]
@@ -327,4 +328,20 @@ fn an_instruction_for_a_cpu_not_lowered_yet_is_refused_by_name() {
     };
     assert!(error.contains("`65816`"), "{error}");
     assert!(error.contains("not lowered yet"), "{error}");
+}
+
+#[test]
+fn every_line_of_cc65s_opcode_tests_for_the_6502s_relatives_assembles_as_ca65_assembles_it() {
+    let mut wrong = Vec::new();
+    for &(cpu, lines) in forms_relatives::FORMS {
+        let profile = Profile::CA65_2_19_6502.with_cpu(cpu);
+        for &(source, hex) in lines {
+            let got = lowered_on(profile, source, &Names::default())
+                .map(|op| encode_on(cpu, &op, &|_| None));
+            if got.as_ref().ok().and_then(Option::as_deref) != Some(hex) {
+                wrong.push(format!("{}: {source}: {got:?}, want {hex}", cpu.name()));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}\n{}", wrong.len(), wrong.join("\n"));
 }

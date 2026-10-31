@@ -140,7 +140,16 @@ impl Cpu {
     /// Whether lowering handles this CPU's instructions yet.
     #[must_use]
     pub const fn lowered(self) -> bool {
-        matches!(self, Self::Mos6502 | Self::Csg4510)
+        matches!(
+            self,
+            Self::Mos6502
+                | Self::Nmos6502X
+                | Self::Mos65sc02
+                | Self::Mos65c02
+                | Self::Wdc65c02
+                | Self::Csg65ce02
+                | Self::Csg4510
+        )
     }
 
     /// The mnemonics of this CPU's instructions, in upper case and in the
