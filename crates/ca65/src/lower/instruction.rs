@@ -65,12 +65,20 @@ pub fn instruction(
             &format!("an instruction for the `{}`", cpu.name()),
         ));
     }
-    // ca65's 4510 table spells some instructions twice: `PHD` is `PHW`, and
-    // `INA` and `DEA` are `INC` and `DEC` of the accumulator.
+    // ca65's tables spell some instructions twice: `INA` and `DEA` are
+    // `INC` and `DEC` of the accumulator, and on the 65CE02 family `PHD` is
+    // `PHW`.
     let mnemonic = match (cpu, written.as_str()) {
-        (Cpu::Csg4510, "PHD") => "PHW".to_owned(),
-        (Cpu::Csg4510, "INA") => "INC".to_owned(),
-        (Cpu::Csg4510, "DEA") => "DEC".to_owned(),
+        (Cpu::Csg65ce02 | Cpu::Csg4510, "PHD") => "PHW".to_owned(),
+        // ca65's 65CE02 table spells `NOP` as `EOM` too.
+        (Cpu::Csg65ce02, "EOM") => "NOP".to_owned(),
+        // ca65 and Isa198x name three of the 6502's undocumented
+        // instructions differently.
+        (Cpu::Nmos6502X, "ALR") => "ASR".to_owned(),
+        (Cpu::Nmos6502X, "AXS") => "SBX".to_owned(),
+        (Cpu::Nmos6502X, "LAX") if operands_immediate(instruction) => "LXA".to_owned(),
+        (_, "INA") if cpu.is_mnemonic("INA") => "INC".to_owned(),
+        (_, "DEA") if cpu.is_mnemonic("DEA") => "DEC".to_owned(),
         _ => written.clone(),
     };
     let find = |mode: &str| form(cpu, &mnemonic, mode);
@@ -100,8 +108,12 @@ pub fn instruction(
         }
     };
     let (mode, value) = match operand {
-        None if matches!(written.as_str(), "INA" | "DEA") => ("accumulator", None),
-        Some(_) if matches!(written.as_str(), "INA" | "DEA") => return Err(illegal()),
+        None if mnemonic != written && matches!(written.as_str(), "INA" | "DEA") => {
+            ("accumulator", None)
+        }
+        Some(_) if mnemonic != written && matches!(written.as_str(), "INA" | "DEA") => {
+            return Err(illegal());
+        }
         None => {
             let mode = ["implied", "accumulator"]
                 .into_iter()
@@ -134,18 +146,30 @@ pub fn instruction(
     })
 }
 
+/// Whether `instruction`'s operand is an immediate value.
+fn operands_immediate(instruction: &Instruction) -> bool {
+    instruction
+        .operands()
+        .next()
+        .is_some_and(|operand| operand.immediate().is_some())
+}
+
 /// The instruction sets `cpu` assembles: the 6502's, and the extension
 /// over it the CPU adds, if any. A lowered instruction's mode names a form
 /// in one of them, the extension's first.
 #[must_use]
 pub fn sets(cpu: Cpu) -> (&'static InstructionSet, Option<&'static InstructionSet>) {
-    match cpu {
-        Cpu::Csg4510 => (
-            &isa198x::mos6502::SET,
-            Some(&isa198x::csg65ce02::CSG4502_SET),
-        ),
-        _ => (&isa198x::mos6502::SET, None),
-    }
+    let extension = match cpu {
+        Cpu::Nmos6502X => Some(&isa198x::nmos6502_undocumented::SET),
+        Cpu::Dtv6502 => Some(&isa198x::c64dtv2::SET),
+        Cpu::Mos65sc02 => Some(&isa198x::mos65c02::SET),
+        Cpu::Mos65c02 => Some(&isa198x::mos65c02::ROCKWELL_SET),
+        Cpu::Wdc65c02 => Some(&isa198x::mos65c02::WDC_SET),
+        Cpu::Csg65ce02 => Some(&isa198x::csg65ce02::SET),
+        Cpu::Csg4510 => Some(&isa198x::csg65ce02::CSG4502_SET),
+        _ => None,
+    };
+    (&isa198x::mos6502::SET, extension)
 }
 
 /// `mnemonic`'s form in `mode` on `cpu`: the extension's, if it has one, or
@@ -242,6 +266,9 @@ fn choose(
             (None, Some("y")) => "(indirect),y",
             (None, Some("z")) => "(indirect),z",
             (Some("s" | "sp"), Some("y")) => "(stack-indirect),y",
+            // `JMP (abs)`, or the 65C02's `(zp)`, which Isa198x names
+            // `(indirect)`.
+            (None, None) if !has("indirect") && has("(indirect)") => "(indirect)",
             (None, None) => "indirect",
             _ => return Err(None),
         };
