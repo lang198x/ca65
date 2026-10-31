@@ -50,8 +50,8 @@ use super::made::{Made, MadeStrings, Strings};
 use super::repeats::{self, Repeat};
 use crate::ast::{Command, Expr, Line, MacroCall, NameRef, SourceFile, Statement, View};
 use crate::parser::commands::{Shape, shape};
-use crate::parser::{Block, parse_prepared};
-use crate::{Context, Cpu, Mode, ParseError, Profile, Token, kinds, lex, parse_with};
+use crate::parser::{Block, parse_in, parse_prepared};
+use crate::{Context, Cpu, Mode, ParseError, Profile, Token, kinds, lex};
 
 /// Bounds on how much work expansion may do, so a program that never ends
 /// stops with a diagnostic instead.
@@ -174,6 +174,8 @@ pub struct ActiveLine {
     label_only: bool,
     /// The made strings on the line whose text cannot hold their bytes.
     strings: MadeStrings,
+    /// The CPU in force where the line was read.
+    cpu: Cpu,
 }
 
 impl ActiveLine {
@@ -194,6 +196,13 @@ impl ActiveLine {
     #[must_use]
     pub fn span(&self) -> Span {
         Span::new(self.text, self.line.syntax().text_range())
+    }
+
+    /// Returns the CPU in force where the line was read, which `.setcpu`
+    /// and its kin choose. The line is lowered for it.
+    #[must_use]
+    pub fn cpu(&self) -> Cpu {
+        self.cpu
     }
 
     /// Returns whether only the line's labels are for the host: the rest is
@@ -238,6 +247,10 @@ struct Source {
     call_depth: Option<usize>,
     /// For a repeat, the times round still to come.
     repeat: Option<Repeat>,
+    /// The CPU its lines were parsed for. A line read after `.setcpu`
+    /// chose another is lexed and parsed again, since the CPU decides
+    /// which names are registers and which are instructions.
+    cpu: Cpu,
 }
 
 /// `line` for the host if it has a label, which is all of it the host
@@ -248,6 +261,7 @@ fn labelled(line: Line, text: TextId) -> Option<ActiveLine> {
         text,
         label_only: true,
         strings: Vec::new(),
+        cpu: Cpu::Mos6502,
     })
 }
 
@@ -308,6 +322,8 @@ impl Context for Defined<'_> {
 pub struct Expander {
     profile: Profile,
     mode: Mode,
+    /// The CPUs `.pushcpu` kept, last on top.
+    cpus: Vec<Cpu>,
     limits: Limits,
     provenance: Provenance,
     sources: Vec<Source>,
@@ -325,6 +341,9 @@ pub struct Expander {
     /// The texts macro calls made, for
     /// [`macro_call`](Expander::macro_call).
     pub(super) macro_texts: HashSet<ExpansionId>,
+    /// The texts a repeat's passes made, whose lines are reported where
+    /// the body was written.
+    pub(super) repeat_texts: HashSet<ExpansionId>,
     /// For each macro call's text, the macro's name and where its
     /// `.macro` line is.
     pub(super) macro_calls: HashMap<ExpansionId, (String, Span)>,
@@ -401,6 +420,7 @@ impl Expander {
         let mut expander = Self {
             profile,
             mode: Mode::of(profile),
+            cpus: Vec::new(),
             limits,
             provenance: Provenance::new(),
             sources: Vec::new(),
@@ -413,6 +433,7 @@ impl Expander {
             files: Vec::new(),
             line_starts: vec![super::locate::line_starts(text)],
             macro_texts: HashSet::new(),
+            repeat_texts: HashSet::new(),
             macro_calls: HashMap::new(),
             macro_sites: HashMap::new(),
             blocks: Vec::new(),
@@ -469,6 +490,7 @@ impl Expander {
                 self.diagnostics.push((text, problem));
             }
             if let Some(mut active) = self.run(line, text, host) {
+                active.cpu = self.mode.cpu();
                 if !active.label_only {
                     self.track_block(&active.line);
                 }
@@ -545,7 +567,7 @@ impl Expander {
                 &mut Defined(&self.macros),
                 &self.blocks,
             )?,
-            None => parse_with(text, self.profile, &mut Defined(&self.macros))?,
+            None => parse_in(text, self.profile, &mut Defined(&self.macros), &self.blocks)?,
         };
         let lines: Vec<Line> = SourceFile::cast(parse.tree().root())
             .map(|file| file.lines().collect())
@@ -580,6 +602,7 @@ impl Expander {
             lines,
             line_problems,
             lexical: lexical_problems,
+            cpu: self.mode.cpu(),
             next: 0,
             call_depth,
             repeat: None,
@@ -606,7 +629,14 @@ impl Expander {
                 let unfinished = source.repeat.is_some()
                     && source.next == source.lines.len()
                     && !ends_line(&line);
+                // A file is read as ca65 scans it, for the CPU in force; the
+                // text of a macro or repeat keeps the tokens it was captured
+                // with, as ca65's does.
+                let stale = source.cpu != self.mode.cpu() && matches!(source.text, TextId::File(_));
                 let mut read = (line, problems, source.text);
+                if stale {
+                    read = self.reread(&read.0, read.2).unwrap_or(read);
+                }
                 if let Some((carried, carried_text)) = self.carry.take() {
                     read = self.join(&carried, carried_text, &read.0, read.2)?;
                 }
@@ -621,6 +651,60 @@ impl Expander {
                 return Some((line, Vec::new(), text));
             }
             self.leave();
+        }
+    }
+
+    /// `line`, from `text`, lexed and parsed again for the current CPU.
+    fn reread(&mut self, line: &Line, text: TextId) -> Option<(Line, Vec<Diagnostic>, TextId)> {
+        let mut builder = Made::new();
+        for token in line
+            .syntax()
+            .descendants()
+            .filter_map(SyntaxElement::into_token)
+        {
+            let from = Span::new(text, token.text_range());
+            builder.token(&token, from, self.copied(from), &self.strings);
+        }
+        let (builder, _, strings) = builder.finish();
+        let expansion = builder.finish().ok()?;
+        let made = expansion.text().to_owned();
+        let id = TextId::Expansion(self.provenance.add(expansion).ok()?);
+        self.strings.add(id, strings);
+        let source = self.load(id, &made, None, None, false).ok()?;
+        let reparsed = source.lines.first().cloned()?;
+        let problems = source.line_problems.into_iter().flatten().collect();
+        Some((reparsed, problems, id))
+    }
+
+    /// The CPU commands, which change how the lines after them are read:
+    /// `.setcpu`, `.p02`, `.p4510`, `.pushcpu` and `.popcpu`. A CPU this
+    /// crate does not model, and a `.popcpu` with nothing to pop, are left
+    /// for lowering to report.
+    fn choose_cpu(&mut self, command: &Command, word: &str, text: TextId) {
+        let cpu = match word {
+            ".p02" => Some(Cpu::Mos6502),
+            ".p4510" => Some(Cpu::Csg4510),
+            ".setcpu" => command.values().next().and_then(|value| {
+                let Expr::Literal(literal) = value else {
+                    return None;
+                };
+                let token = literal.token().filter(|t| t.kind() == kinds::STRING)?;
+                let name = match self.strings.get(Span::new(text, token.text_range())) {
+                    Some(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+                    None => token.text().trim_matches('"').to_owned(),
+                };
+                Cpu::named(&name)
+            }),
+            ".pushcpu" => {
+                self.cpus.push(self.mode.cpu());
+                None
+            }
+            ".popcpu" => self.cpus.pop(),
+            _ => None,
+        };
+        if let Some(cpu) = cpu {
+            self.profile = self.profile.with_cpu(cpu);
+            self.mode = Mode::of(self.profile);
         }
     }
 
@@ -840,6 +924,9 @@ impl Expander {
         match line.statement() {
             Some(Statement::Command(command)) => {
                 let word = command.word().map(|w| w.text().to_ascii_lowercase());
+                if let Some(word) = word.as_deref() {
+                    self.choose_cpu(&command, word, text);
+                }
                 match word.as_deref() {
                     Some(word) if is_conditional(word) => {
                         // ca65 defines a label on a conditional's line when
@@ -902,6 +989,7 @@ impl Expander {
                             text,
                             label_only: true,
                             strings: Vec::new(),
+                            cpu: Cpu::Mos6502,
                         });
                     }
                     Some(word) if repeats::is_end(word) => {
@@ -922,6 +1010,7 @@ impl Expander {
                         text,
                         label_only: true,
                         strings: Vec::new(),
+                        cpu: Cpu::Mos6502,
                     });
                 }
             }
@@ -932,6 +1021,7 @@ impl Expander {
             text,
             label_only: false,
             strings: Vec::new(),
+            cpu: Cpu::Mos6502,
         })
     }
 
@@ -1064,6 +1154,12 @@ impl Expander {
             }
             let source = self.sources.last_mut()?;
             source.next += 1;
+            // A body is captured as tokens for the CPU in force now.
+            let stale = source.cpu != self.mode.cpu() && matches!(text, TextId::File(_));
+            let (line, text) = match stale.then(|| self.reread(&line, text)).flatten() {
+                Some((line, _, text)) => (line, text),
+                None => (line, text),
+            };
             if let Some((line, _, text)) = self.expand_defines(line, Vec::new(), text, true) {
                 return Some((line, text));
             }
@@ -1371,9 +1467,12 @@ impl Expander {
         let Some(builder) = repeat.next_time(&self.strings) else {
             return;
         };
-        let Some((_, mut source)) = self.add_text(builder, None) else {
+        let Some((id, mut source)) = self.add_text(builder, None) else {
             return;
         };
+        if let TextId::Expansion(id) = id {
+            self.repeat_texts.insert(id);
+        }
         self.expanded_bytes += source
             .lines
             .last()
@@ -1458,6 +1557,7 @@ impl Expander {
             ".ifblank" => command.tokens().is_none(),
             ".ifnblank" => command.tokens().is_some(),
             ".ifp02" => self.mode.cpu() == Cpu::Mos6502,
+            ".ifp4510" => self.mode.cpu() == Cpu::Csg4510,
             // Every other CPU test asks about a CPU this crate does not
             // model yet, so none is the current one.
             _ => false,

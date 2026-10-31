@@ -6,9 +6,9 @@
 //! mode". Range checks, such as a zero-page operand above `$FF`, are left to
 //! the back end, which has the final values.
 
-use asm198x_ir::{Expr as Ir, Operation};
+use asm198x_ir::{BinOp, Expr as Ir, Operation};
 use isa198x::InstructionSet;
-use lang198x_syntax::{Diagnostic, SyntaxToken};
+use lang198x_syntax::{Diagnostic, SyntaxToken, TextRange};
 
 use super::expr::{self, invalid};
 use super::{Known, Size, Value};
@@ -54,27 +54,48 @@ pub fn instruction(
     known: &dyn Known,
 ) -> Result<Operation, Diagnostic> {
     let range = instruction.syntax().text_range();
-    let mnemonic = instruction
+    let written = instruction
         .mnemonic()
         .map(|t| t.text().to_ascii_uppercase())
         .ok_or_else(|| invalid(range, "expected a mnemonic"))?;
-    let set = set(Mode::of(profile).cpu());
-    let mut operands = instruction.operands();
-    let operand = operands.next();
-    if let Some(extra) = operands.next() {
-        return Err(invalid(
-            extra.syntax().text_range(),
-            "expected the end of the line",
-        ));
-    }
-    let has = |mode: &str| set.find_form(&mnemonic, mode).is_some();
+    let cpu = Mode::of(profile).cpu();
+    // ca65's 4510 table spells some instructions twice: `PHD` is `PHW`, and
+    // `INA` and `DEA` are `INC` and `DEC` of the accumulator.
+    let mnemonic = match (cpu, written.as_str()) {
+        (Cpu::Csg4510, "PHD") => "PHW".to_owned(),
+        (Cpu::Csg4510, "INA") => "INC".to_owned(),
+        (Cpu::Csg4510, "DEA") => "DEC".to_owned(),
+        _ => written.clone(),
+    };
+    let find = |mode: &str| form(cpu, &mnemonic, mode);
+    let has = |mode: &str| find(mode).is_some();
     let illegal = || {
         invalid(
             range,
             "this addressing mode is not one this instruction has",
         )
     };
+    let operands: Vec<Operand> = instruction.operands().collect();
+    if has("zeropage,relative") {
+        return bit_branch(&mnemonic, &operands, range, known);
+    }
+    let operand = match operands.as_slice() {
+        [] => None,
+        [operand] => Some(operand),
+        // `(address), name` on an instruction that is not a bit branch is
+        // an indirect address with a bad register.
+        [first, extra, ..] => {
+            let message = if first.indirect().is_some() {
+                "expected `y`"
+            } else {
+                "expected the end of the line"
+            };
+            return Err(invalid(extra.syntax().text_range(), message));
+        }
+    };
     let (mode, value) = match operand {
+        None if matches!(written.as_str(), "INA" | "DEA") => ("accumulator", None),
+        Some(_) if matches!(written.as_str(), "INA" | "DEA") => return Err(illegal()),
         None => {
             let mode = ["implied", "accumulator"]
                 .into_iter()
@@ -82,9 +103,24 @@ pub fn instruction(
                 .ok_or_else(illegal)?;
             (mode, None)
         }
-        Some(operand) => choose(&operand, &has, known).map_err(|e| e.unwrap_or_else(illegal))?,
+        Some(operand) => choose(operand, &has, known).map_err(|e| e.unwrap_or_else(illegal))?,
     };
-    let form = set.find_form(&mnemonic, mode).ok_or_else(illegal)?;
+    // `PHW #value` pushes a word.
+    let mode = if mode == "immediate" && has("immediate16") {
+        "immediate16"
+    } else {
+        mode
+    };
+    let form = find(mode).ok_or_else(illegal)?;
+    // A 65CE02 long branch counts from its opcode plus two, where the
+    // shared encoder counts from the end of the instruction, as the
+    // 65816's do; the target carries the difference. ACME does the same.
+    let value = match (form.mode, value) {
+        ("relative16", Some(target)) => {
+            Some(Ir::Bin(BinOp::Add, Box::new(target), Box::new(Ir::Num(1))))
+        }
+        (_, value) => value,
+    };
     Ok(Operation::Instruction {
         mnemonic,
         mode: form.mode,
@@ -92,11 +128,71 @@ pub fn instruction(
     })
 }
 
-/// The instruction set a CPU mode assembles.
-fn set(cpu: Cpu) -> &'static InstructionSet {
+/// The instruction sets `cpu` assembles: the 6502's, and the extension
+/// over it the CPU adds, if any. A lowered instruction's mode names a form
+/// in one of them, the extension's first.
+#[must_use]
+pub fn sets(cpu: Cpu) -> (&'static InstructionSet, Option<&'static InstructionSet>) {
     match cpu {
-        Cpu::Mos6502 => &isa198x::mos6502::SET,
+        Cpu::Csg4510 => (
+            &isa198x::mos6502::SET,
+            Some(&isa198x::csg65ce02::CSG4502_SET),
+        ),
+        _ => (&isa198x::mos6502::SET, None),
     }
+}
+
+/// `mnemonic`'s form in `mode` on `cpu`: the extension's, if it has one, or
+/// the 6502's.
+fn form(cpu: Cpu, mnemonic: &str, mode: &str) -> Option<&'static isa198x::Form> {
+    let (base, extension) = sets(cpu);
+    extension
+        .and_then(|set| set.find_form(mnemonic, mode))
+        .or_else(|| base.find_form(mnemonic, mode))
+}
+
+/// A Rockwell bit branch, `BBRn zp, target` or `BBSn zp, target`, as ca65's
+/// `PutBitBranch` reads it: two values, each an expression.
+fn bit_branch(
+    mnemonic: &str,
+    operands: &[Operand],
+    range: TextRange,
+    known: &dyn Known,
+) -> Result<Operation, Diagnostic> {
+    let [zero, target] = operands else {
+        return Err(invalid(range, "expected `,`"));
+    };
+    let value = |operand: &Operand| {
+        // `(1)` is a value in parentheses here, not an indirect address.
+        let written = match operand.indirect() {
+            Some(indirect)
+                if indirect.inner_register().is_none()
+                    && indirect.outer_register().is_none()
+                    && operand.address_size().is_none() =>
+            {
+                indirect.expr()
+            }
+            _ if operand.address_size().is_none()
+                && operand.index().is_none()
+                && operand.immediate().is_none() =>
+            {
+                operand.expr()
+            }
+            _ => None,
+        };
+        let written = written.ok_or_else(|| {
+            invalid(
+                operand.syntax().text_range(),
+                "this addressing mode is not one this instruction has",
+            )
+        })?;
+        expr::expression(&written, known)
+    };
+    Ok(Operation::Instruction {
+        mnemonic: mnemonic.to_owned(),
+        mode: "zeropage,relative",
+        operands: vec![value(zero)?, value(target)?],
+    })
 }
 
 /// The mode an operand asks for, and its value. `Err(None)` is a mode the
@@ -134,8 +230,12 @@ fn choose(
         let inner = register(indirect.inner_register());
         let outer = register(indirect.outer_register());
         let mode = match (inner.as_deref(), outer.as_deref()) {
+            // `JMP (abs,x)` on the CMOS CPUs.
+            (Some("x"), None) if !has("(indirect,x)") && has("(absolute,x)") => "(absolute,x)",
             (Some("x"), None) => "(indirect,x)",
             (None, Some("y")) => "(indirect),y",
+            (None, Some("z")) => "(indirect),z",
+            (Some("s" | "sp"), Some("y")) => "(stack-indirect),y",
             (None, None) => "indirect",
             _ => return Err(None),
         };
@@ -162,6 +262,7 @@ fn choose(
         Some("y") => ("zeropage,y", "absolute,y"),
         Some(_) => return Err(None),
         None if forced.is_none() && has("relative") => return Ok(("relative", Some(value))),
+        None if forced.is_none() && has("relative16") => return Ok(("relative16", Some(value))),
         None => ("zeropage", "absolute"),
     };
     let mode = match size {

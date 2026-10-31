@@ -117,6 +117,8 @@ impl TestHost {
                 let width = match word.as_deref() {
                     Some(".byte") => 1,
                     Some(".word") => 2,
+                    // The expander follows the CPU itself.
+                    Some(".setcpu" | ".p02" | ".p4510" | ".pushcpu" | ".popcpu") => return,
                     other => return self.problems.push(format!("no command {other:?} here")),
                 };
                 command.values().try_for_each(|value| {

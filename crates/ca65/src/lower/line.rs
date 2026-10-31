@@ -174,6 +174,8 @@ pub enum Scope {
 /// [`Unsupported`](lang198x_syntax::DiagnosticKind::Unsupported) for a
 /// command ca65 accepts that is not lowered yet.
 pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lowered, Diagnostic> {
+    // The CPU in force where the line was read.
+    let profile = profile.with_cpu(line.cpu());
     let syntax = line.line();
     let mut labels: Vec<String> = Vec::new();
     if syntax.unnamed_label().is_some() {
