@@ -9,8 +9,8 @@ lowering to `asm198x-ir` for the Asm198x back end.
 
 Status: building. The crate reads ca65's default mode, with every `.feature`
 off: the lexer, the parser, preprocessing (conditionals, macros, repeats,
-defines, token functions and includes), and lowering to `asm198x-ir` behind the
-`ir` feature. Two CPUs are modelled: the 6502 and the 4510 (`.p4510`), and the
+defines, token functions and includes), lowering to `asm198x-ir` behind the
+`ir` feature, and a formatter that only moves spaces. Two CPUs are modelled: the 6502 and the 4510 (`.p4510`), and the
 expander follows `.setcpu`, `.pushcpu` and `.popcpu` as it reads. The other
 CPUs come next. The plan is
 [`ca65-front-end.md`](https://github.com/lang198x/lang198x/blob/main/docs/plans/ca65-front-end.md)
