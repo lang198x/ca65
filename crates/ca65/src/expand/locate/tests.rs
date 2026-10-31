@@ -129,6 +129,9 @@ fn a_repeats_lines_are_reported_where_the_body_was_written() {
     // note is the place that helps.
     let source = ".repeat 2\n nop\n nop\n.endrepeat\n";
     assert_eq!(readings(source), [(0, 2), (0, 3), (0, 2), (0, 3)]);
+    // A line that starts with the counter is reported where it was written.
+    let source = ".repeat 2,J\n.byte J\nJ=1\n.endrepeat\n";
+    assert_eq!(readings(source), [(0, 2), (0, 3), (0, 2), (0, 3)]);
     // A repeat in a macro is still reported at the call.
     let source = ".macro m\n.repeat 1\n nop\n.endrepeat\n.endmacro\nm\n";
     assert_eq!(readings(source), [(0, 6)]);

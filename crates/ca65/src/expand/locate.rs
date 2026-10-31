@@ -107,6 +107,8 @@ impl Expander {
             at = match (origin, origin.site(), origin.copied_from()) {
                 (Origin::Included { from, .. }, _, _) => from,
                 (_, _, Some(from)) if repeated => from,
+                // A repeat's counter stands where it was written.
+                (Origin::Synthesised { inputs, .. }, _, _) if repeated => inputs,
                 (_, Some(site), _) => site,
                 (_, None, Some(from)) => from,
                 (_, None, None) => break,
