@@ -8,9 +8,10 @@ use isa198x::OperandKind;
 
 use crate::ast::{SourceFile, Statement, View};
 use crate::lower::{Known, Size, Value};
-use crate::{Profile, parse};
+use crate::{Cpu, Profile, parse};
 
 mod forms;
+mod forms_4510;
 
 /// What the tests' assembler knows: names, and the address.
 #[derive(Default)]
@@ -34,20 +35,29 @@ impl Known for Names {
 
 /// The one instruction in `source`, lowered.
 fn lowered(source: &str, known: &dyn Known) -> Result<Operation, String> {
-    let parse = parse(&format!("{source}\n"), Profile::CA65_2_19_6502).expect("parses");
+    lowered_on(Profile::CA65_2_19_6502, source, known)
+}
+
+/// The one instruction in `source`, lowered under `profile`.
+fn lowered_on(profile: Profile, source: &str, known: &dyn Known) -> Result<Operation, String> {
+    let parse = parse(&format!("{source}\n"), profile).expect("parses");
     let line = SourceFile::cast(parse.tree().root())
         .and_then(|file| file.lines().next())
         .expect("a line");
     let Some(Statement::Instruction(instruction)) = line.statement() else {
         return Err(format!("not an instruction: {source}"));
     };
-    super::instruction(&instruction, Profile::CA65_2_19_6502, known)
-        .map_err(|d| d.message().to_owned())
+    super::instruction(&instruction, profile, known).map_err(|d| d.message().to_owned())
 }
 
 /// Encodes an instruction at 0 as the back end does, with `symbols` giving
 /// each name's final value, in hex.
 fn encode(op: &Operation, symbols: &dyn Fn(&str) -> Option<i64>) -> Option<String> {
+    encode_on(Cpu::Mos6502, op, symbols)
+}
+
+/// Encodes an instruction for `cpu` at 0 as the back end does.
+fn encode_on(cpu: Cpu, op: &Operation, symbols: &dyn Fn(&str) -> Option<i64>) -> Option<String> {
     let Operation::Instruction {
         mnemonic,
         mode,
@@ -56,7 +66,7 @@ fn encode(op: &Operation, symbols: &dyn Fn(&str) -> Option<i64>) -> Option<Strin
     else {
         return None;
     };
-    let form = isa198x::mos6502::SET.find_form(mnemonic, mode)?;
+    let form = super::form(cpu, mnemonic, mode)?;
     let len: i64 = 1 + form
         .operands
         .iter()
@@ -69,7 +79,8 @@ fn encode(op: &Operation, symbols: &dyn Fn(&str) -> Option<i64>) -> Option<Strin
             .ok()?;
         let value = if slot.kind == OperandKind::RelativePc {
             let offset = value - len;
-            (-128..=127).contains(&offset).then_some(offset)?
+            let limit = 1_i64 << (8 * slot.bytes - 1);
+            (-limit..limit).contains(&offset).then_some(offset)?
         } else {
             let limit = 1_i64 << (8 * slot.bytes);
             (0..limit).contains(&value).then_some(value)?
@@ -246,4 +257,64 @@ fn the_address_can_be_known() {
             ..
         }
     ));
+}
+
+#[test]
+fn every_4510_line_of_cc65s_opcode_test_assembles_as_ca65_assembles_it() {
+    for &(source, hex) in forms_4510::FORMS_4510 {
+        let op = lowered_on(Profile::CA65_2_19_4510, source, &Names::default()).expect(source);
+        assert_eq!(
+            encode_on(Cpu::Csg4510, &op, &|_| None).as_deref(),
+            Some(hex),
+            "{source}"
+        );
+    }
+}
+
+/// Lines measured on ca65 V2.19 under `.p4510`. `None` is a line ca65
+/// refused.
+const MEASURED_4510: &[(&str, Option<&str>)] = &[
+    // `PHD` is `PHW`, and `INA` and `DEA` are `INC` and `DEC` of the
+    // accumulator.
+    ("phd #$1234", Some("f43412")),
+    ("phd $1234", Some("fc3412")),
+    ("ina", Some("1a")),
+    ("dea", Some("3a")),
+    ("ina a", None),
+    ("inc a", Some("1a")),
+    ("lda ($12,sp),y", Some("e212")),
+    ("lda ($12,SP),Y", Some("e212")),
+    ("lda ($12),z", Some("b212")),
+    ("sta ($12,s),y", Some("8212")),
+    ("jmp ($1234,x)", Some("7c3412")),
+    ("jsr ($1234,x)", Some("233412")),
+    ("lda ($12,x),y", None),
+    ("lda ($12),q", None),
+    ("lda ($12),y,z", None),
+    ("lda ($12),z,y", None),
+    ("lbne $1003", Some("d30110")),
+    ("bbr0 $12", None),
+    ("bbr0 #1,$10", None),
+    ("bbr0 $12,$10,x", None),
+    ("bbr0 ($12),$10", Some("0f120d")),
+    ("bbr0 ($12,x),$10", None),
+    ("bbr0 z:$12,$10", None),
+    ("bbr0 $12,($10)", Some("0f120d")),
+];
+
+#[test]
+fn every_measured_4510_line_matches_ca65() {
+    for &(source, hex) in MEASURED_4510 {
+        let got = lowered_on(Profile::CA65_2_19_4510, source, &Names::default())
+            .ok()
+            .and_then(|op| encode_on(Cpu::Csg4510, &op, &|_| None));
+        assert_eq!(got.as_deref(), hex, "{source}");
+    }
+}
+
+#[test]
+fn a_4510_instruction_is_not_a_6502_one() {
+    assert!(lowered("lda ($12),z", &Names::default()).is_err());
+    assert!(lowered("bbr0 $12,$10", &Names::default()).is_err());
+    assert!(lowered("lbne $1003", &Names::default()).is_err());
 }

@@ -8,6 +8,7 @@ use super::*;
 use crate::Profile;
 use crate::ast::View;
 
+mod cpus;
 mod defines;
 mod functions;
 pub(crate) mod host;

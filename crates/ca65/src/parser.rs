@@ -159,6 +159,17 @@ pub fn parse_with(
     parse_from(text, Box::new(Lexer::new(text)), profile, context, &[])
 }
 
+/// Parses `text` like [`parse_with`], inside `blocks`: the blocks open
+/// where the text goes.
+pub(crate) fn parse_in(
+    text: &str,
+    profile: Profile,
+    context: &mut dyn Context,
+    blocks: &[Block],
+) -> Result<Parse, ParseError> {
+    parse_from(text, Box::new(Lexer::new(text)), profile, context, blocks)
+}
+
 /// Parses `text` from `tokens`, which cover it exactly and are not lexed
 /// again: the text an expansion was made of. `blocks` are the blocks open
 /// where the text goes, so a macro's lines inside a `.struct` are members.
@@ -597,7 +608,16 @@ impl Parser<'_, '_> {
             Some(kinds::REGISTER) if self.next_text().eq_ignore_ascii_case("a") => {
                 self.bump_next();
             }
-            Some(kinds::L_PAREN) => self.indirect(),
+            Some(kinds::L_PAREN) => {
+                self.indirect();
+                // `(address), target`, a bit branch's address in parentheses.
+                if self.next_kind() == Some(kinds::COMMA) {
+                    self.bump_next();
+                    self.builder.finish_node();
+                    self.operand();
+                    return;
+                }
+            }
             Some(kinds::L_BRACK) => self.long_indirect(),
             Some(_) => {
                 self.expression();
@@ -622,7 +642,9 @@ impl Parser<'_, '_> {
         self.builder.finish_node();
     }
 
-    /// `(address)`, `(address,x)` or `(address),y`.
+    /// `(address)`, `(address,x)` or `(address),y`, and on the 65CE02
+    /// family `(address),z` and `(offset,sp),y`. `z` and `sp` are registers
+    /// only on those CPUs, as the lexer's mode says.
     fn indirect(&mut self) {
         self.trivia();
         self.builder.start_node(kinds::INDIRECT);
@@ -632,11 +654,17 @@ impl Parser<'_, '_> {
         if indexed {
             self.bump_next();
         }
-        let closed = (!indexed || self.require_register(&["x", "s"], "expected `x` or `s`"))
+        let closed = (!indexed || self.require_register(&["x", "s", "sp"], "expected `x` or `s`"))
             && self.require(kinds::R_PAREN, "expected `)`");
-        if closed && self.next_kind() == Some(kinds::COMMA) {
+        // A comma before anything but a register is left for a bit branch's
+        // target.
+        let register_follows = self.peek_nth(1) == Some(kinds::REGISTER)
+            || self
+                .peek_nth(1)
+                .is_none_or(|kind| matches!(kind, SyntaxKind::COMMENT | SyntaxKind::NEWLINE));
+        if closed && self.next_kind() == Some(kinds::COMMA) && register_follows {
             self.bump_next();
-            self.require_register(&["y"], "expected `y`");
+            self.require_register(&["y", "z"], "expected `y`");
         }
         self.builder.finish_node();
     }

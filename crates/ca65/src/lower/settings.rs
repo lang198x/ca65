@@ -2,9 +2,9 @@
 //! makes: the CPU, smart mode, `.autoimport`, the listing, debug
 //! information and file options.
 //!
-//! Each follows ca65 V2.19's `pseudo.c`. Only the 6502 profile exists, so
-//! choosing the 6502 changes nothing, and choosing another CPU is not
-//! lowered yet. The rest make no bytes, so they are checked as ca65 checks
+//! Each follows ca65 V2.19's `pseudo.c`. The expander follows the CPU a
+//! line chooses, and each line says which is in force; choosing a CPU no
+//! profile has is not lowered yet. The rest make no bytes, so they are checked as ca65 checks
 //! them and then have no effect. `.pushcpu` and `.popcpu` are reported, so
 //! the assembler can keep ca65's stack of CPUs and refuse a `.popcpu` with
 //! nothing to pop.
@@ -36,7 +36,6 @@ const CPUS: &[&str] = &[
 /// The commands that choose a CPU other than the 6502.
 const OTHER_CPUS: &[&str] = &[
     ".p02x",
-    ".p4510",
     ".p45gs02",
     ".p6280",
     ".p816",
@@ -63,7 +62,9 @@ pub(super) fn setting(
         .unwrap_or_default();
     let values: Vec<Expr> = command.values().collect();
     match word.as_str() {
-        ".p02" => {}
+        // The expander follows the CPU, and each line it hands on says which
+        // is in force.
+        ".p02" | ".p4510" => {}
         word if OTHER_CPUS.contains(&word) => {
             return Err(unsupported(
                 range,
@@ -77,7 +78,7 @@ pub(super) fn setting(
             }
             .ok_or_else(|| invalid(range, "`.setcpu` takes the CPU's name in quotes"))?;
             let name = String::from_utf8_lossy(&name).into_owned();
-            if !name.eq_ignore_ascii_case("6502") {
+            if crate::Cpu::named(&name).is_none() {
                 if CPUS.iter().any(|cpu| cpu.eq_ignore_ascii_case(&name)) {
                     return Err(unsupported(range, &format!("the CPU `{name}`")));
                 }

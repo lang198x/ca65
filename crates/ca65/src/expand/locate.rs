@@ -1,6 +1,6 @@
 //! Where a span came from, in the files a person wrote.
 
-use lang198x_syntax::{FileId, Span, TextId, TextRange, TextSize};
+use lang198x_syntax::{FileId, Origin, Span, TextId, TextRange, TextSize};
 
 use super::Expander;
 
@@ -99,10 +99,17 @@ impl Expander {
             else {
                 break;
             };
-            at = match (origin.site(), origin.copied_from()) {
-                (Some(site), _) => site,
-                (None, Some(from)) => from,
-                (None, None) => break,
+            // A token copied from an included file was written there; the
+            // `.include` line is only how it was reached. A repeat's line is
+            // reported where the body was written, which is where ca65's
+            // note under the error points.
+            let repeated = self.repeat_texts.contains(&id);
+            at = match (origin, origin.site(), origin.copied_from()) {
+                (Origin::Included { from, .. }, _, _) => from,
+                (_, _, Some(from)) if repeated => from,
+                (_, Some(site), _) => site,
+                (_, None, Some(from)) => from,
+                (_, None, None) => break,
             };
         }
         at

@@ -254,6 +254,36 @@ fn indirect_operands_check_their_registers() {
 }
 
 #[test]
+fn the_4510s_indirect_operands() {
+    let line = |text: &str| {
+        let parse = parse(text, Profile::CA65_2_19_4510).expect("parses");
+        assert!(parse.diagnostics().is_empty(), "{text}");
+        let first = parse
+            .tree()
+            .root()
+            .children()
+            .next()
+            .and_then(SyntaxElement::into_node)
+            .expect("a line");
+        render(&first)
+    };
+    assert_eq!(
+        line("lda ($12),z"),
+        "(LINE (INSTRUCTION lda (OPERAND (INDIRECT ( (LITERAL $12) ) , z))))"
+    );
+    assert_eq!(
+        line("lda ($12,sp),y"),
+        "(LINE (INSTRUCTION lda (OPERAND (INDIRECT ( (LITERAL $12) , sp ) , y))))"
+    );
+    // A bit branch's address may be in parentheses; the comma then starts
+    // its target.
+    assert_eq!(
+        line("bbr0 ($12),$10"),
+        "(LINE (INSTRUCTION bbr0 (OPERAND (INDIRECT ( (LITERAL $12) )) ,) (OPERAND (LITERAL $10))))"
+    );
+}
+
+#[test]
 fn a_second_operand_after_a_comma() {
     // The bit branches of later CPUs take `address, target`; the 6502's
     // instructions refuse it when they are assembled.

@@ -18,7 +18,7 @@ mod record;
 mod settings;
 
 pub use expr::expression;
-pub use instruction::instruction;
+pub use instruction::{instruction, sets};
 pub use line::{Binary, Declared, Item, Lowered, Scope, Segment, Visibility, Visible, line};
 pub use record::{Record, RecordKind};
 pub use settings::CpuStack;
