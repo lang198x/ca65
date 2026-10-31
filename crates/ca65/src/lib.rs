@@ -23,6 +23,7 @@
 
 pub mod ast;
 pub mod expand;
+mod format;
 mod keywords;
 pub mod kinds;
 mod lexer;
@@ -34,6 +35,7 @@ mod number;
 mod parser;
 mod profile;
 
+pub use format::format;
 pub use keywords::{CONTROL_COMMANDS, is_control_command};
 /// The shared syntax layer this crate builds on, for its spans, provenance
 /// and diagnostics.
