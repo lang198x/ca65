@@ -27,7 +27,121 @@ pub(super) fn line_starts(text: &str) -> Vec<TextSize> {
     starts
 }
 
+/// One macro call a line came through: which macro, where it is defined,
+/// and where it was called. [`Expander::macro_frames`] lists them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct MacroFrame {
+    /// The macro's name.
+    pub name: String,
+    /// Its `.macro` line.
+    pub defined: Span,
+    /// The call, in the text the call is in.
+    pub called: Span,
+}
+
+/// Where a line is, as ca65 reports a problem on it: at the outermost
+/// macro call that made it, if one did, with each call it came through.
+/// [`Host::reading`](super::Host::reading) is told it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Reading {
+    /// The line itself.
+    pub span: Span,
+    /// Where a problem on it is reported, if that is in a file.
+    pub at: Option<Location>,
+    /// Each macro call the line came through, innermost first.
+    pub frames: Vec<FrameAt>,
+}
+
+/// A [`MacroFrame`] placed in the files a person wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct FrameAt {
+    /// The macro's name.
+    pub name: String,
+    /// Its `.macro` line.
+    pub defined: Option<Location>,
+    /// The call.
+    pub called: Option<Location>,
+}
+
 impl Expander {
+    /// Where the line at `span` is, as ca65 reports a problem on it.
+    #[must_use]
+    pub fn reading(&self, span: Span) -> Reading {
+        let frames = self.macro_frames(span);
+        let at = self.locate(self.used_at(span));
+        Reading {
+            span,
+            at,
+            frames: frames
+                .into_iter()
+                .map(|frame| FrameAt {
+                    defined: self.locate(frame.defined),
+                    called: self.locate(frame.called),
+                    name: frame.name,
+                })
+                .collect(),
+        }
+    }
+
+    /// Where the text at `span` was used, in a file: for made text, the
+    /// call, define or function that made it, rather than where its tokens
+    /// were copied from, as ca65 reports a problem at the line it reads.
+    fn used_at(&self, span: Span) -> Span {
+        let mut at = span;
+        while let TextId::Expansion(id) = at.text() {
+            let Some(origin) = self
+                .provenance()
+                .get(id)
+                .and_then(|text| text.origin_at(at.range().start()))
+            else {
+                break;
+            };
+            at = match (origin.site(), origin.copied_from()) {
+                (Some(site), _) => site,
+                (None, Some(from)) => from,
+                (None, None) => break,
+            };
+        }
+        at
+    }
+
+    /// Returns each macro call that made `span`, innermost first, as
+    /// ca65 lists them under an error: an error is reported at the
+    /// outermost call, and each call notes where it expanded from. Empty
+    /// if no macro call made `span`.
+    #[must_use]
+    pub fn macro_frames(&self, span: Span) -> Vec<MacroFrame> {
+        let mut frames = Vec::new();
+        let mut at = span;
+        while let TextId::Expansion(id) = at.text() {
+            let Some(origin) = self
+                .provenance()
+                .get(id)
+                .and_then(|text| text.origin_at(at.range().start()))
+            else {
+                break;
+            };
+            at = match (origin.site(), origin.copied_from()) {
+                (Some(site), _) => {
+                    if let Some((name, defined)) = self.macro_calls.get(&id) {
+                        frames.push(MacroFrame {
+                            name: name.clone(),
+                            defined: *defined,
+                            called: site,
+                        });
+                    }
+                    site
+                }
+                (None, Some(from)) => from,
+                (None, None) => break,
+            };
+        }
+        frames
+    }
+
     /// Returns the outermost macro call that made `span`, as a span in the
     /// text the call is in, or `None` if no macro call made it. A repeat's
     /// lines, and the text a define or a token function makes, are not a

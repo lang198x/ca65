@@ -44,6 +44,7 @@ use lang198x_syntax::{
 use super::conditional::{Conditionals, Misfit};
 use super::defines::{self, Define, Piece, Problem};
 use super::functions;
+use super::locate::Reading;
 use super::macros::{self, Macro};
 use super::made::{Made, MadeStrings, Strings};
 use super::repeats::{self, Repeat};
@@ -126,6 +127,13 @@ pub trait Host {
     fn package(&mut self, name: &str) -> Option<String> {
         let _ = name;
         None
+    }
+
+    /// Told where the line the expander is about to act on is, before it
+    /// asks anything about it, so an answer that finds a problem can say
+    /// where. The default does nothing.
+    fn reading(&mut self, reading: &Reading) {
+        let _ = reading;
     }
 }
 
@@ -317,6 +325,11 @@ pub struct Expander {
     /// The texts macro calls made, for
     /// [`macro_call`](Expander::macro_call).
     pub(super) macro_texts: HashSet<ExpansionId>,
+    /// For each macro call's text, the macro's name and where its
+    /// `.macro` line is.
+    pub(super) macro_calls: HashMap<ExpansionId, (String, Span)>,
+    /// Where each macro's `.macro` line is, by name.
+    macro_sites: HashMap<String, Span>,
     /// The blocks open at the line being read, from the lines that ran, so
     /// text parsed on its own reads as it does where it goes: a macro's
     /// lines inside a `.struct` are members.
@@ -400,6 +413,8 @@ impl Expander {
             files: Vec::new(),
             line_starts: vec![super::locate::line_starts(text)],
             macro_texts: HashSet::new(),
+            macro_calls: HashMap::new(),
+            macro_sites: HashMap::new(),
             blocks: Vec::new(),
             line_start: 0,
             deferred: None,
@@ -418,6 +433,7 @@ impl Expander {
     /// done. `host` answers the conditions met on the way.
     pub fn next_line(&mut self, host: &mut dyn Host) -> Option<ActiveLine> {
         if let Some((command, word, text)) = self.deferred.take() {
+            host.reading(&self.reading(Span::new(text, command.syntax().text_range())));
             self.conditional(&command, &word, text, host);
         }
         while !self.ended {
@@ -429,6 +445,7 @@ impl Expander {
             else {
                 continue;
             };
+            host.reading(&self.reading(Span::new(text, line.syntax().text_range())));
             if self.lines_read >= self.limits.lines {
                 self.report(
                     text,
@@ -760,7 +777,11 @@ impl Expander {
             } else {
                 format!("there is no macro package `{name}`")
             };
-            self.report(text, site.range(), &message);
+            // The problem is the name, so it is reported there.
+            let at = value
+                .as_ref()
+                .map_or(site.range(), |value| value.syntax().text_range());
+            self.report(text, at, &message);
             return;
         };
         let Ok(number) = u32::try_from(self.files.len() + 1) else {
@@ -933,7 +954,10 @@ impl Expander {
                 let parsed_as_call = matches!(line.statement(), Some(Statement::MacroCall(_)));
                 parsed_as_call != self.macros.contains_key(&head)
             });
-        if !guessed && !stale {
+        // A line the parser took for a macro's body, after a `.macro` that a
+        // skipped branch never opened, is an ordinary line.
+        let orphaned = matches!(line.statement(), Some(Statement::MacroBody(_)));
+        if !guessed && !stale && !orphaned {
             return (line, problems, text);
         }
         let mut builder = Made::new();
@@ -1006,6 +1030,8 @@ impl Expander {
             .params()
             .map(|p| p.names().map(|n| n.text().to_owned()).collect())
             .unwrap_or_default();
+        self.macro_sites
+            .insert(name.clone(), Span::new(text, command.syntax().text_range()));
         self.macros.insert(name, Macro::new(params, body));
     }
 
@@ -1254,10 +1280,13 @@ impl Expander {
         let first_local = self.next_local;
         self.next_local += definition.local_count();
         let builder = definition.expand(call, text, first_local, &self.strings);
-        let Some((_, source)) = self.add_text(builder, Some(self.conditionals.depth())) else {
+        let Some((id, source)) = self.add_text(builder, Some(self.conditionals.depth())) else {
             self.report(text, site, "this macro call's text could not be made");
             return;
         };
+        if let (TextId::Expansion(id), Some(defined)) = (id, self.macro_sites.get(name)) {
+            self.macro_calls.insert(id, (name.to_owned(), *defined));
+        }
         self.expanded_bytes += source
             .lines
             .last()
