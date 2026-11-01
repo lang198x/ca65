@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.22](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.21...lang198x-ca65-v0.0.22) - 2026-11-01
+
+### Added
+
+- lower the M740 and SWEET 16
+
+### Dependencies
+
+- *(deps)* take isa198x 0.1.10
+
 ## [0.0.21](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.20...lang198x-ca65-v0.0.21) - 2026-11-01
 
 ### Added
