@@ -152,6 +152,7 @@ impl Cpu {
                 | Self::HuC6280
                 | Self::Wdc65816
                 | Self::Dtv6502
+                | Self::Mega45gs02
         )
     }
 
@@ -405,7 +406,7 @@ mod tests {
         assert_eq!(Cpu::Sweet16.registers().len(), 19);
         assert!(Cpu::Mos6502.lowered() && Cpu::Csg4510.lowered());
         assert!(Cpu::Wdc65816.lowered() && Cpu::Dtv6502.lowered());
-        assert!(!Cpu::M740.lowered() && !Cpu::Sweet16.lowered() && !Cpu::Mega45gs02.lowered());
+        assert!(!Cpu::M740.lowered() && !Cpu::Sweet16.lowered() && Cpu::Mega45gs02.lowered());
     }
 
     #[test]
