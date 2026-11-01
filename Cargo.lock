@@ -169,9 +169,9 @@ dependencies = [
 
 [[package]]
 name = "isa198x"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fd199905f9c1a1b9e73958648740d63597dad82ed291123ac995a9c6f30cabe"
+checksum = "83c86cdb838feb6e460d64bb1a6015de4c33cf3ff7130df7ee9c7e1397bd411a"
 
 [[package]]
 name = "lang198x-ca65"
