@@ -175,7 +175,7 @@ checksum = "1dbae6b7942f3122a0e9a151bbc33e6e91d50c8e33a4a0e541af0d94927eda1e"
 
 [[package]]
 name = "lang198x-ca65"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "asm198x-ir",
  "isa198x",

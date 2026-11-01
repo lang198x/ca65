@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.21](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.20...lang198x-ca65-v0.0.21) - 2026-11-01
+
+### Added
+
+- lower the 45GS02
+
+### Dependencies
+
+- *(deps)* take isa198x 0.1.9
+
 ## [0.0.20](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.19...lang198x-ca65-v0.0.20) - 2026-11-01
 
 ### Added
