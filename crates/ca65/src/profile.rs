@@ -150,6 +150,7 @@ impl Cpu {
                 | Self::Csg65ce02
                 | Self::Csg4510
                 | Self::HuC6280
+                | Self::Wdc65816
         )
     }
 
@@ -218,6 +219,52 @@ impl Cpu {
             Self::Sweet16 => "ca65-2.19-sweet16",
             Self::HuC6280 => "ca65-2.19-huc6280",
             Self::M740 => "ca65-2.19-m740",
+        }
+    }
+}
+
+/// The widths of the 65816's accumulator and index registers, in bits.
+///
+/// `.a8`, `.a16`, `.i8` and `.i16` set them, and so do `rep` and `sep`
+/// under `.smart`. On the 65816 they size an immediate, and `.asize` and
+/// `.isize` give them. Both start at 8. ca65 keeps them while another CPU
+/// is chosen, but uses them only on the 65816.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Widths {
+    accumulator16: bool,
+    index16: bool,
+}
+
+impl Widths {
+    /// The accumulator's width: 8 or 16.
+    #[must_use]
+    pub const fn accumulator(self) -> u8 {
+        if self.accumulator16 { 16 } else { 8 }
+    }
+
+    /// The index registers' width: 8 or 16.
+    #[must_use]
+    pub const fn index(self) -> u8 {
+        if self.index16 { 16 } else { 8 }
+    }
+
+    /// These widths, with the accumulator 16 bits wide if `sixteen`, or
+    /// else 8.
+    #[must_use]
+    pub const fn with_accumulator(self, sixteen: bool) -> Self {
+        Self {
+            accumulator16: sixteen,
+            ..self
+        }
+    }
+
+    /// These widths, with the index registers 16 bits wide if `sixteen`,
+    /// or else 8.
+    #[must_use]
+    pub const fn with_index(self, sixteen: bool) -> Self {
+        Self {
+            index16: sixteen,
+            ..self
         }
     }
 }
@@ -356,7 +403,7 @@ mod tests {
         assert_eq!(Cpu::Mega45gs02.registers().last(), Some(&"Q"));
         assert_eq!(Cpu::Sweet16.registers().len(), 19);
         assert!(Cpu::Mos6502.lowered() && Cpu::Csg4510.lowered());
-        assert!(!Cpu::Wdc65816.lowered());
+        assert!(Cpu::Wdc65816.lowered() && !Cpu::Dtv6502.lowered());
     }
 
     #[test]

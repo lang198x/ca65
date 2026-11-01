@@ -67,6 +67,12 @@ pub(super) fn setting(
                 None => return Err(invalid(range, "CPU not supported")),
             }
         }
+        // The widths are the expander's to follow; ca65 allows them only on
+        // the 65816.
+        ".a8" | ".a16" | ".i8" | ".i16" if line.cpu() != crate::Cpu::Wdc65816 => {
+            return Err(invalid(range, "Command is only valid in 65816 mode"));
+        }
+        ".a8" | ".a16" | ".i8" | ".i16" => {}
         ".pushcpu" => return Ok(Some(Some(CpuStack::Push))),
         ".popcpu" => return Ok(Some(Some(CpuStack::Pop))),
         ".smart" | ".autoimport" | ".list" | ".debuginfo" => switch(command)?,

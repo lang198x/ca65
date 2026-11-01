@@ -51,7 +51,7 @@ use super::repeats::{self, Repeat};
 use crate::ast::{Command, Expr, Line, MacroCall, NameRef, SourceFile, Statement, View};
 use crate::parser::commands::{Shape, shape};
 use crate::parser::{Block, parse_in, parse_prepared};
-use crate::{Context, Cpu, Mode, ParseError, Profile, Token, kinds, lex};
+use crate::{Context, Cpu, Mode, ParseError, Profile, Token, Widths, kinds, lex};
 
 /// Bounds on how much work expansion may do, so a program that never ends
 /// stops with a diagnostic instead.
@@ -176,6 +176,8 @@ pub struct ActiveLine {
     strings: MadeStrings,
     /// The CPU in force where the line was read.
     cpu: Cpu,
+    /// The 65816's register widths where the line was read.
+    widths: Widths,
 }
 
 impl ActiveLine {
@@ -203,6 +205,13 @@ impl ActiveLine {
     #[must_use]
     pub fn cpu(&self) -> Cpu {
         self.cpu
+    }
+
+    /// Returns the 65816's register widths where the line was read, before
+    /// the line itself changes them.
+    #[must_use]
+    pub fn widths(&self) -> Widths {
+        self.widths
     }
 
     /// Returns whether only the line's labels are for the host: the rest is
@@ -262,6 +271,7 @@ fn labelled(line: Line, text: TextId) -> Option<ActiveLine> {
         label_only: true,
         strings: Vec::new(),
         cpu: Cpu::Mos6502,
+        widths: Widths::default(),
     })
 }
 
@@ -324,6 +334,10 @@ pub struct Expander {
     mode: Mode,
     /// The CPUs `.pushcpu` kept, last on top.
     cpus: Vec<Cpu>,
+    /// The 65816's register widths.
+    widths: Widths,
+    /// Whether `.smart` is on, so `rep` and `sep` change the widths.
+    smart: bool,
     limits: Limits,
     provenance: Provenance,
     sources: Vec<Source>,
@@ -421,6 +435,8 @@ impl Expander {
             profile,
             mode: Mode::of(profile),
             cpus: Vec::new(),
+            widths: Widths::default(),
+            smart: false,
             limits,
             provenance: Provenance::new(),
             sources: Vec::new(),
@@ -491,8 +507,10 @@ impl Expander {
             }
             if let Some(mut active) = self.run(line, text, host) {
                 active.cpu = self.mode.cpu();
+                active.widths = self.widths;
                 if !active.label_only {
                     self.track_block(&active.line);
+                    self.follow_widths(&active.line, host);
                 }
                 let range = active.line.syntax().text_range();
                 active.strings = self
@@ -506,6 +524,69 @@ impl Expander {
         }
         self.finish();
         None
+    }
+
+    /// Follows the 65816's register widths, which `line` may change for
+    /// the lines after it, as ca65 V2.19 does: `.a8`, `.a16`, `.i8` and
+    /// `.i16` on the 65816, and there under `.smart` a `rep` or `sep` whose
+    /// value is known now. Bit 5 of the value is the accumulator's and bit 4
+    /// the index registers'. A value not known yet leaves the widths as they
+    /// are; ca65 warns of that.
+    fn follow_widths(&mut self, line: &Line, host: &mut dyn Host) {
+        let on_65816 = self.mode.cpu() == Cpu::Wdc65816;
+        match line.statement() {
+            Some(Statement::Command(command)) => {
+                let Some(word) = command.word() else {
+                    return;
+                };
+                let widths = self.widths;
+                match word.text().to_ascii_lowercase().as_str() {
+                    ".a8" if on_65816 => self.widths = widths.with_accumulator(false),
+                    ".a16" if on_65816 => self.widths = widths.with_accumulator(true),
+                    ".i8" if on_65816 => self.widths = widths.with_index(false),
+                    ".i16" if on_65816 => self.widths = widths.with_index(true),
+                    ".smart" => match command.switch() {
+                        None => self.smart = true,
+                        Some(token) => match token.kind() {
+                            kinds::PLUS => self.smart = true,
+                            kinds::MINUS => self.smart = false,
+                            _ if token.text().eq_ignore_ascii_case("on") => self.smart = true,
+                            _ if token.text().eq_ignore_ascii_case("off") => self.smart = false,
+                            _ => {}
+                        },
+                    },
+                    _ => {}
+                }
+            }
+            Some(Statement::Instruction(instruction)) if on_65816 && self.smart => {
+                let Some(mnemonic) = instruction.mnemonic() else {
+                    return;
+                };
+                let sixteen = match mnemonic.text().to_ascii_lowercase().as_str() {
+                    "rep" => true,
+                    "sep" => false,
+                    _ => return,
+                };
+                let Some(value) = instruction
+                    .operands()
+                    .next()
+                    .and_then(|operand| operand.immediate())
+                    .and_then(|immediate| immediate.expr())
+                else {
+                    return;
+                };
+                let Ok(value) = host.evaluate(&value) else {
+                    return;
+                };
+                if value & 0x20 != 0 {
+                    self.widths = self.widths.with_accumulator(sixteen);
+                }
+                if value & 0x10 != 0 {
+                    self.widths = self.widths.with_index(sixteen);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Follows the blocks a line that runs opens or closes: `.struct`,
@@ -989,6 +1070,7 @@ impl Expander {
                             label_only: true,
                             strings: Vec::new(),
                             cpu: Cpu::Mos6502,
+                            widths: Widths::default(),
                         });
                     }
                     Some(word) if repeats::is_end(word) => {
@@ -1010,6 +1092,7 @@ impl Expander {
                         label_only: true,
                         strings: Vec::new(),
                         cpu: Cpu::Mos6502,
+                        widths: Widths::default(),
                     });
                 }
             }
@@ -1021,6 +1104,7 @@ impl Expander {
             label_only: false,
             strings: Vec::new(),
             cpu: Cpu::Mos6502,
+            widths: Widths::default(),
         })
     }
 

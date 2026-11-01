@@ -128,6 +128,13 @@ pub trait Known {
     fn read(&self, name: &str) {
         let _ = name;
     }
+
+    /// The 65816's register widths in force on the line, which size an
+    /// immediate and give `.asize` and `.isize`. Lowering a line answers
+    /// this from the line; the default is 8 bits each.
+    fn widths(&self) -> crate::Widths {
+        crate::Widths::default()
+    }
 }
 
 /// The address size ca65 V2.19 gives `expr`, as its `StudyExpr` works it

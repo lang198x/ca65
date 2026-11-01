@@ -129,6 +129,9 @@ fn function(call: &CallExpr, range: TextRange, known: &dyn Known) -> Result<Ir, 
         .unwrap_or_default();
     match name.as_str() {
         ".sizeof" => return size_of(call, range, known),
+        // The widths are 8 except on the 65816.
+        ".asize" => return Ok(Ir::Num(i64::from(known.widths().accumulator()))),
+        ".isize" => return Ok(Ir::Num(i64::from(known.widths().index()))),
         ".defined" | ".def" => {
             let name = named(call, range, "`.defined`")?;
             return Ok(Ir::Num(i64::from(known.is_defined(&name))));

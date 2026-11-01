@@ -42,4 +42,4 @@ pub use keywords::{CONTROL_COMMANDS, is_control_command};
 pub use lang198x_syntax as syntax;
 pub use lexer::{Lexed, Lexer, Token, lex};
 pub use parser::{Context, ParseError, parse, parse_with};
-pub use profile::{Cpu, Mode, Profile};
+pub use profile::{Cpu, Mode, Profile, Widths};
