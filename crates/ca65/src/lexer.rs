@@ -165,6 +165,9 @@ impl<'t> Lexer<'t> {
             '%' => (kinds::NUMBER, self.prefixed(rest, 2)),
             '0'..='9' => (kinds::NUMBER, self.digit_led(rest)),
             '.' => self.dotted(rest),
+            // ca65 reads `@` as SWEET 16's indirect mark before it looks
+            // for a cheap local name.
+            '@' if mode.cpu() == crate::Cpu::Sweet16 => (kinds::AT, 1),
             '@' => at(rest),
             '\'' => (kinds::CHAR, self.character(rest)),
             '"' => (kinds::STRING, self.string(rest)),

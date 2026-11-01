@@ -59,15 +59,20 @@ pub fn instruction(
         .map(|t| t.text().to_ascii_uppercase())
         .ok_or_else(|| invalid(range, "expected a mnemonic"))?;
     let cpu = Mode::of(profile).cpu();
-    if !cpu.lowered() {
-        return Err(super::expr::unsupported(
-            range,
-            &format!("an instruction for the `{}`", cpu.name()),
-        ));
-    }
     // ca65's tables spell some instructions twice: `INA` and `DEA` are
     // `INC` and `DEC` of the accumulator, and on the 65CE02 family `PHD` is
     // `PHW`.
+    if cpu == Cpu::Sweet16 {
+        return sweet16(instruction, &written, range, known);
+    }
+    // ca65's M740 table has two clock instructions of older 740 parts that
+    // the 740 family manuals do not describe, so Isa198x has no form for them.
+    if cpu == Cpu::M740 && matches!(written.as_str(), "FST" | "SLW") {
+        return Err(super::expr::unsupported(
+            range,
+            &format!("`{written}`, which the 740 family manuals do not describe,"),
+        ));
+    }
     let mnemonic = match (cpu, written.as_str()) {
         (Cpu::Csg65ce02 | Cpu::Csg4510 | Cpu::Mega45gs02, "PHD") => "PHW".to_owned(),
         // ca65's 65CE02 table spells `NOP` as `EOM` too.
@@ -79,6 +84,8 @@ pub fn instruction(
         (Cpu::Nmos6502X | Cpu::Dtv6502, "LAX") if operands_immediate(instruction) => {
             "LXA".to_owned()
         }
+        // ca65's M740 table spells `CLBn zz` as `RMBn zz` too.
+        (Cpu::M740, rmb) if rmb.starts_with("RMB") => format!("CLB{}", &rmb[3..]),
         (_, "INA") if cpu.is_mnemonic("INA") => "INC".to_owned(),
         (_, "DEA") if cpu.is_mnemonic("DEA") => "DEC".to_owned(),
         _ => written.clone(),
@@ -92,8 +99,11 @@ pub fn instruction(
         )
     };
     let operands: Vec<Operand> = instruction.operands().collect();
-    if has("zeropage,relative") {
-        return bit_branch(&mnemonic, &operands, range, known);
+    if has("zeropage,relative") || has("accumulator,relative") {
+        return bit_branch(&mnemonic, &operands, &has, range, known);
+    }
+    if cpu == Cpu::M740 && mnemonic == "LDM" {
+        return load_memory(&operands, range, known);
     }
     if has("block") {
         return block_transfer(&mnemonic, &operands, range, known);
@@ -163,6 +173,17 @@ pub fn instruction(
         }
         Some(operand) => choose(operand, &has, Reading::of(cpu, &mnemonic), known)
             .map_err(|e| e.unwrap_or_else(illegal))?,
+    };
+    // The M740's special-page `JSR`, `$22 nn`, calls `$FFnn`. ca65 takes it
+    // for any target known now to be on that page, `a:` or not.
+    let (mode, value) = match (cpu, mnemonic.as_str(), mode, value) {
+        (Cpu::M740, "JSR", "absolute", Some(target))
+            if expr::constant(&target, known).is_some_and(|v| (0xFF00..=0xFFFF).contains(&v)) =>
+        {
+            let low = Ir::Bin(BinOp::And, Box::new(target), Box::new(Ir::Num(0xFF)));
+            ("special-page", Some(low))
+        }
+        (_, _, mode, value) => (mode, value),
     };
     let mode = match (cpu, mode) {
         // `PHW #value` pushes a word.
@@ -241,6 +262,9 @@ pub fn sets(cpu: Cpu) -> (&'static InstructionSet, Option<&'static InstructionSe
         Cpu::HuC6280 => Some(&isa198x::huc6280::SET),
         Cpu::Wdc65816 => Some(&isa198x::mos65816::SET),
         Cpu::Mega45gs02 => Some(&isa198x::mega45gs02::SET),
+        Cpu::M740 => Some(&isa198x::m740::SET),
+        // SWEET 16 is a set of its own, not a 6502 extension.
+        Cpu::Sweet16 => return (&isa198x::sweet16::SET, None),
         _ => None,
     };
     (&isa198x::mos6502::SET, extension)
@@ -467,17 +491,150 @@ fn plain(operand: &Operand, known: &dyn Known) -> Result<Ir, Diagnostic> {
 fn bit_branch(
     mnemonic: &str,
     operands: &[Operand],
+    has: &dyn Fn(&str) -> bool,
     range: TextRange,
     known: &dyn Known,
 ) -> Result<Operation, Diagnostic> {
-    let [zero, target] = operands else {
+    let [tested, target] = operands else {
         return Err(invalid(range, "expected `,`"));
     };
     let value = |operand: &Operand| plain(operand, known);
+    // The M740 tests a bit of A, too: `BBSn a, target`.
+    if tested.accumulator().is_some() {
+        if !has("accumulator,relative") {
+            return Err(invalid(
+                tested.syntax().text_range(),
+                "this addressing mode is not one this instruction has",
+            ));
+        }
+        return Ok(Operation::Instruction {
+            mnemonic: mnemonic.to_owned(),
+            mode: "accumulator,relative",
+            operands: vec![value(target)?],
+        });
+    }
+    if !has("zeropage,relative") {
+        return Err(invalid(
+            tested.syntax().text_range(),
+            "this addressing mode is not one this instruction has",
+        ));
+    }
     Ok(Operation::Instruction {
         mnemonic: mnemonic.to_owned(),
         mode: "zeropage,relative",
-        operands: vec![value(zero)?, value(target)?],
+        operands: vec![value(tested)?, value(target)?],
+    })
+}
+
+/// A SWEET 16 instruction, as ca65's `GetSweet16EA` reads its operand:
+///
+/// - nothing, for `RTN`, `BK` and `RS`;
+/// - `@Rn` or `@n`, a register used as a pointer;
+/// - `Rn`, or `Rn, constant` for `SET`;
+/// - a value: a branch target, or, if it is a constant from 0 to 15 known
+///   now, a register number too, and `n, constant` for `SET`.
+fn sweet16(
+    instruction: &Instruction,
+    mnemonic: &str,
+    range: TextRange,
+    known: &dyn Known,
+) -> Result<Operation, Diagnostic> {
+    let illegal = || invalid(range, "Illegal addressing mode");
+    let has = |mode: &str| form(Cpu::Sweet16, mnemonic, mode).is_some();
+    let done = |mode: String, operands: Vec<Ir>| {
+        let form = form(Cpu::Sweet16, mnemonic, &mode).ok_or_else(illegal)?;
+        Ok(Operation::Instruction {
+            mnemonic: mnemonic.to_owned(),
+            mode: form.mode,
+            operands,
+        })
+    };
+    // The register a token or a constant names, if it names one.
+    let numbered = |token: Option<SyntaxToken>| {
+        token.and_then(|t| {
+            t.text()[1..]
+                .parse::<i64>()
+                .ok()
+                .filter(|n| (0..=15).contains(n))
+        })
+    };
+    let register_number = |operand: &Operand| -> Result<Option<i64>, Diagnostic> {
+        if let Some(number) = numbered(operand.register()) {
+            return Ok(Some(number));
+        }
+        let Some(value) = operand.expr() else {
+            return Ok(None);
+        };
+        let value = expr::expression(&value, known)?;
+        Ok(expr::constant(&value, known).filter(|n| (0..=15).contains(n)))
+    };
+    let operands: Vec<Operand> = instruction.operands().collect();
+    match operands.as_slice() {
+        [] => done("implied".to_owned(), Vec::new()),
+        [operand] if operand.at().is_some() => {
+            let number = register_number(operand)?.ok_or_else(|| {
+                invalid(
+                    operand.syntax().text_range(),
+                    "Expected register or register number",
+                )
+            })?;
+            done(format!("@r{number}"), Vec::new())
+        }
+        [operand] => match register_number(operand)? {
+            Some(number) if has(&format!("r{number}")) => done(format!("r{number}"), Vec::new()),
+            _ if operand.register().is_some() => Err(illegal()),
+            _ => {
+                let target = operand.expr().ok_or_else(illegal)?;
+                done(
+                    "relative".to_owned(),
+                    vec![expr::expression(&target, known)?],
+                )
+            }
+        },
+        [register, constant] => {
+            let number = register_number(register)?.ok_or_else(illegal)?;
+            let constant = constant
+                .expr()
+                .ok_or_else(|| invalid(constant.syntax().text_range(), "expected a value"))?;
+            done(
+                format!("r{number},immediate"),
+                vec![expr::expression(&constant, known)?],
+            )
+        }
+        [_, _, extra, ..] => Err(invalid(
+            extra.syntax().text_range(),
+            "expected the end of the line",
+        )),
+    }
+}
+
+/// The M740's `LDM`, which ca65 writes `LDM zz, #nn`. The manual's encoding
+/// lays the value down before the address, `$3C nn zz`.
+fn load_memory(
+    operands: &[Operand],
+    range: TextRange,
+    known: &dyn Known,
+) -> Result<Operation, Diagnostic> {
+    let [address, value] = operands else {
+        return Err(invalid(range, "expected `,`"));
+    };
+    let illegal = |operand: &Operand| {
+        invalid(
+            operand.syntax().text_range(),
+            "this addressing mode is not one this instruction has",
+        )
+    };
+    let value = value
+        .immediate()
+        .filter(|_| value.address_size().is_none())
+        .and_then(|immediate| immediate.expr())
+        .ok_or_else(|| invalid(value.syntax().text_range(), "`#` expected"))?;
+    let value = expr::expression(&value, known)?;
+    let lowered = plain(address, known).map_err(|_| illegal(address))?;
+    Ok(Operation::Instruction {
+        mnemonic: "LDM".to_owned(),
+        mode: "immediate,zeropage",
+        operands: vec![value, lowered],
     })
 }
 
@@ -555,6 +712,15 @@ fn choose(
             (None, None) if reading.plain_zp_is_z && !has("indirect") && has("(indirect),z") => {
                 "(indirect),z"
             }
+            // The M740's `JMP (zz)` and `JMP (hhll)`: ca65 takes the
+            // zero-page form for a value that fits a byte.
+            (None, None)
+                if reading.zp_indirect_by_size
+                    && has("(indirect)")
+                    && expr::size(&value, known) == Size::Zero =>
+            {
+                "(indirect)"
+            }
             (None, None) => "indirect",
             _ => return Err(None),
         };
@@ -611,6 +777,9 @@ struct Reading {
     /// The instruction is one of the 45GS02's Q instructions, which take
     /// `q` as their register and `(zp)` and `(zp),z` alike.
     quad: bool,
+    /// A plain `(zp)` and `(abs)` are told apart by the value's size: the
+    /// M740's `JMP`.
+    zp_indirect_by_size: bool,
 }
 
 impl Reading {
@@ -622,6 +791,7 @@ impl Reading {
         Self {
             plain_zp_is_z: matches!(cpu, Cpu::Csg65ce02 | Cpu::Mega45gs02),
             quad: cpu == Cpu::Mega45gs02 && QUAD.contains(&mnemonic),
+            zp_indirect_by_size: cpu == Cpu::M740,
         }
     }
 }

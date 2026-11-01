@@ -22,7 +22,23 @@ impl Operand {
     /// the 45GS02's 32-bit Q register.
     #[must_use]
     pub fn accumulator(&self) -> Option<SyntaxToken> {
+        token(&self.0, kinds::REGISTER).filter(|register| {
+            register.text().eq_ignore_ascii_case("a") || register.text().eq_ignore_ascii_case("q")
+        })
+    }
+
+    /// Returns the register the operand names, if it names one: `a`, the
+    /// 45GS02's `q`, or a SWEET 16 register such as `r5`.
+    #[must_use]
+    pub fn register(&self) -> Option<SyntaxToken> {
         token(&self.0, kinds::REGISTER)
+    }
+
+    /// Returns SWEET 16's `@`, when the operand is a register used as a
+    /// pointer.
+    #[must_use]
+    pub fn at(&self) -> Option<SyntaxToken> {
+        token(&self.0, kinds::AT)
     }
 
     /// Returns the operand as `#value`, if it is one.

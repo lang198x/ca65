@@ -137,23 +137,13 @@ impl Cpu {
             .find(|cpu| cpu.command()[1..].eq_ignore_ascii_case(rest))
     }
 
-    /// Whether lowering handles this CPU's instructions yet.
+    /// Whether lowering handles this CPU's instructions. Every one of
+    /// ca65 V2.19's CPUs is lowered, so this is always true; it stays so a
+    /// caller that asks need not change.
     #[must_use]
     pub const fn lowered(self) -> bool {
-        matches!(
-            self,
-            Self::Mos6502
-                | Self::Nmos6502X
-                | Self::Mos65sc02
-                | Self::Mos65c02
-                | Self::Wdc65c02
-                | Self::Csg65ce02
-                | Self::Csg4510
-                | Self::HuC6280
-                | Self::Wdc65816
-                | Self::Dtv6502
-                | Self::Mega45gs02
-        )
+        let _ = self;
+        true
     }
 
     /// The mnemonics of this CPU's instructions, in upper case and in the
@@ -404,9 +394,7 @@ mod tests {
         assert_eq!(Cpu::asked_by(".ifp6510"), None);
         assert_eq!(Cpu::Mega45gs02.registers().last(), Some(&"Q"));
         assert_eq!(Cpu::Sweet16.registers().len(), 19);
-        assert!(Cpu::Mos6502.lowered() && Cpu::Csg4510.lowered());
-        assert!(Cpu::Wdc65816.lowered() && Cpu::Dtv6502.lowered());
-        assert!(!Cpu::M740.lowered() && !Cpu::Sweet16.lowered() && Cpu::Mega45gs02.lowered());
+        assert!(Cpu::ALL.into_iter().all(Cpu::lowered));
     }
 
     #[test]
