@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.19](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.18...lang198x-ca65-v0.0.19) - 2026-11-01
+
+### Added
+
+- lower the 65816, with its register widths
+- lower the HuC6280
+- lower the 6502X, 65SC02, 65C02, W65C02 and 65CE02
+- put every ca65 CPU on the profile's axis
+
 ## [0.0.18](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.17...lang198x-ca65-v0.0.18) - 2026-10-31
 
 ### Added
