@@ -178,6 +178,12 @@ kinds! {
     ARG,
     /// Tokens taken as they are, such as `{1, 2}` in `.tcount({1, 2})`.
     TOKEN_LIST,
+
+    // A token added after the nodes, so no kind before it is renumbered.
+
+    /// `@` on its own, before a register: SWEET 16's indirect mark. On every
+    /// other CPU `@` starts a cheap local name.
+    AT,
 }
 
 /// The name of one of this crate's kinds, such as `"NUMBER"`, for tests and
@@ -203,9 +209,9 @@ mod tests {
     fn kinds_are_numbered_in_order_and_named() {
         assert_eq!(name(IDENT), Some("IDENT"));
         assert_eq!(name(SOURCE_FILE), Some("SOURCE_FILE"));
-        assert_eq!(name(TOKEN_LIST), Some("TOKEN_LIST"));
+        assert_eq!(name(AT), Some("AT"));
         assert_eq!(
-            usize::from(TOKEN_LIST.get() - IDENT.get()) + 1,
+            usize::from(AT.get() - IDENT.get()) + 1,
             NAMES.len(),
             "the last kind is numbered one below the table's length"
         );

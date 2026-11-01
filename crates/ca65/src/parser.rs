@@ -618,6 +618,33 @@ impl Parser<'_, '_> {
                     || self.next_text().eq_ignore_ascii_case("q") =>
             {
                 self.bump_next();
+                // `a, target`, the M740's accumulator bit branch.
+                if self.next_kind() == Some(kinds::COMMA) {
+                    self.bump_next();
+                    self.builder.finish_node();
+                    self.operand();
+                    return;
+                }
+            }
+            // SWEET 16: `@register` or `@number`, a register used as a
+            // pointer.
+            Some(kinds::AT) => {
+                self.bump_next();
+                if self.next_kind() == Some(kinds::REGISTER) {
+                    self.bump_next();
+                } else {
+                    self.expression();
+                }
+            }
+            // SWEET 16: `Rn`, or `Rn, constant`.
+            Some(kinds::REGISTER) if is_numbered_register(self.next_text()) => {
+                self.bump_next();
+                if self.next_kind() == Some(kinds::COMMA) {
+                    self.bump_next();
+                    self.builder.finish_node();
+                    self.operand();
+                    return;
+                }
             }
             Some(kinds::L_PAREN) => {
                 self.indirect();
@@ -859,3 +886,8 @@ impl Parser<'_, '_> {
 
 #[cfg(test)]
 mod tests;
+
+/// Whether `text` names a numbered register, SWEET 16's `R0` to `R15`.
+fn is_numbered_register(text: &str) -> bool {
+    text.len() > 1 && text.starts_with(['r', 'R']) && text[1..].bytes().all(|b| b.is_ascii_digit())
+}

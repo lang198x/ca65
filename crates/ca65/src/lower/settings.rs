@@ -3,8 +3,7 @@
 //! information and file options.
 //!
 //! Each follows ca65 V2.19's `pseudo.c`. The expander follows the CPU a
-//! line chooses, and each line says which is in force; choosing a CPU no
-//! profile has is not lowered yet. The rest make no bytes, so they are checked as ca65 checks
+//! line chooses, and each line says which is in force. The rest make no bytes, so they are checked as ca65 checks
 //! them and then have no effect. `.pushcpu` and `.popcpu` are reported, so
 //! the assembler can keep ca65's stack of CPUs and refuse a `.popcpu` with
 //! nothing to pop.
@@ -42,14 +41,8 @@ pub(super) fn setting(
     let values: Vec<Expr> = command.values().collect();
     match word.as_str() {
         // The expander follows the CPU, and each line it hands on says which
-        // is in force. A CPU lowering does not handle yet is refused here.
-        word if crate::Cpu::chosen_by(word).is_some_and(crate::Cpu::lowered) => {}
-        word if crate::Cpu::chosen_by(word).is_some() => {
-            return Err(unsupported(
-                range,
-                &format!("`{word}`, which chooses another CPU,"),
-            ));
-        }
+        // is in force.
+        word if crate::Cpu::chosen_by(word).is_some() => {}
         ".setcpu" => {
             let name = match values.as_slice() {
                 [value] => super::line::string(value, line),
@@ -58,9 +51,8 @@ pub(super) fn setting(
             .ok_or_else(|| invalid(range, "`.setcpu` takes the CPU's name in quotes"))?;
             let name = String::from_utf8_lossy(&name).into_owned();
             match crate::Cpu::named(&name) {
-                Some(cpu) if cpu.lowered() => {}
+                Some(_) => {}
                 // ca65 knows `none` too, a CPU with no instructions.
-                Some(_) => return Err(unsupported(range, &format!("the CPU `{name}`"))),
                 None if name.eq_ignore_ascii_case("none") => {
                     return Err(unsupported(range, &format!("the CPU `{name}`")));
                 }

@@ -741,12 +741,7 @@ fn ca65_refuses_a_label_before_a_scope() {
 #[test]
 fn what_is_not_lowered_yet_says_so() {
     let profile = Profile::CA65_2_19_6502;
-    for source in [
-        ".byte .cpu\n",
-        ".segment \"X\": dword\n",
-        ".psweet16\n",
-        ".proc p: far\n",
-    ] {
+    for source in [".byte .cpu\n", ".segment \"X\": dword\n", ".proc p: far\n"] {
         let mut expander = Expander::new(source, profile).expect("parses");
         let mut mini = Mini::default();
         let active = expander.next_line(&mut mini).expect("a line");
@@ -798,11 +793,10 @@ fn settings_report_the_cpu_stack_and_constructors_export() {
     );
     assert!(first(".condes s::init, 0\n").is_err());
 
-    // Another CPU is not lowered yet, which is not the same as refused.
+    // What is not lowered yet is not the same as refused: ca65's `none`, a
+    // CPU with no instructions, and some debug information.
     for source in [
-        ".setcpu \"sweet16\"\n",
-        ".setcpu \"m740\"\n",
-        ".psweet16\n",
+        ".setcpu \"none\"\n",
         ".dbg line, \"t.s\", 3\n",
         ".dbg sym, \"x\"\n",
     ] {
@@ -811,8 +805,12 @@ fn settings_report_the_cpu_stack_and_constructors_export() {
     }
     let problem = first(".setcpu \"nope\"\n").err().expect("unknown");
     assert_eq!(problem.kind(), DiagnosticKind::Invalid);
-    // The 6502's relatives, the HuC6280 and the 65816 are lowered.
+    // Every CPU is lowered.
     for source in [
+        ".setcpu \"sweet16\"\n",
+        ".psweet16\n",
+        ".setcpu \"m740\"\n",
+        ".p45gs02\n",
         ".setcpu \"65C02\"\n",
         ".pc02\n",
         ".p02x\n",
