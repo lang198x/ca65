@@ -69,7 +69,7 @@ pub fn instruction(
     // `INC` and `DEC` of the accumulator, and on the 65CE02 family `PHD` is
     // `PHW`.
     let mnemonic = match (cpu, written.as_str()) {
-        (Cpu::Csg65ce02 | Cpu::Csg4510, "PHD") => "PHW".to_owned(),
+        (Cpu::Csg65ce02 | Cpu::Csg4510 | Cpu::Mega45gs02, "PHD") => "PHW".to_owned(),
         // ca65's 65CE02 table spells `NOP` as `EOM` too.
         (Cpu::Csg65ce02, "EOM") => "NOP".to_owned(),
         // ca65 and Isa198x name three of the 6502's undocumented
@@ -161,11 +161,14 @@ pub fn instruction(
                 .ok_or_else(illegal)?;
             (mode, None)
         }
-        Some(operand) => choose(operand, &has, known).map_err(|e| e.unwrap_or_else(illegal))?,
+        Some(operand) => choose(operand, &has, Reading::of(cpu, &mnemonic), known)
+            .map_err(|e| e.unwrap_or_else(illegal))?,
     };
     let mode = match (cpu, mode) {
         // `PHW #value` pushes a word.
-        (Cpu::Csg65ce02 | Cpu::Csg4510, "immediate") if has("immediate16") => "immediate16",
+        (Cpu::Csg65ce02 | Cpu::Csg4510 | Cpu::Mega45gs02, "immediate") if has("immediate16") => {
+            "immediate16"
+        }
         // On the 65816, an immediate is as wide as its register.
         (Cpu::Wdc65816, "immediate") if has("immediate16") => {
             let widths = known.widths();
@@ -237,6 +240,7 @@ pub fn sets(cpu: Cpu) -> (&'static InstructionSet, Option<&'static InstructionSe
         Cpu::Csg4510 => Some(&isa198x::csg65ce02::CSG4502_SET),
         Cpu::HuC6280 => Some(&isa198x::huc6280::SET),
         Cpu::Wdc65816 => Some(&isa198x::mos65816::SET),
+        Cpu::Mega45gs02 => Some(&isa198x::mega45gs02::SET),
         _ => None,
     };
     (&isa198x::mos6502::SET, extension)
@@ -328,8 +332,8 @@ fn test(
     let form = |mode: &str| form(Cpu::HuC6280, mnemonic, &format!("immediate,{mode}"));
     let has = |mode: &str| form(mode).is_some();
     let address_range = address.syntax().text_range();
-    let (mode, value) =
-        choose(address, &has, known).map_err(|e| e.unwrap_or_else(|| illegal(address_range)))?;
+    let (mode, value) = choose(address, &has, Reading::default(), known)
+        .map_err(|e| e.unwrap_or_else(|| illegal(address_range)))?;
     let form = form(mode).ok_or_else(|| illegal(address_range))?;
     Ok(Operation::Instruction {
         mnemonic: mnemonic.to_owned(),
@@ -482,6 +486,7 @@ fn bit_branch(
 fn choose(
     operand: &Operand,
     has: &dyn Fn(&str) -> bool,
+    reading: Reading,
     known: &dyn Known,
 ) -> Result<(&'static str, Option<Ir>), Option<Diagnostic>> {
     let range = operand.syntax().text_range();
@@ -489,7 +494,11 @@ fn choose(
         let e = e.ok_or_else(|| invalid(range, "expected a value"))?;
         expr::expression(&e, known).map_err(Some)
     };
-    if operand.accumulator().is_some() {
+    if let Some(register) = operand.accumulator() {
+        // `q` names the register only a Q instruction acts on.
+        if register.text().eq_ignore_ascii_case("q") && !reading.quad {
+            return Err(None);
+        }
         return Ok(("accumulator", None));
     }
     // ca65 forces a size only on an address: `lda z:#1` and
@@ -508,9 +517,13 @@ fn choose(
         let value = lowered(long.expr())?;
         let mode = match register(long.outer_register()).as_deref() {
             None if has("[indirect]") => "[indirect]",
+            // `LDQ [zp]` is `LDQ [zp],z`, as ca65 reads it.
+            None if reading.quad && has("[indirect],z") => "[indirect],z",
             // `JML [abs]` and `JMP [abs]`.
             None if has("[absolute]") => "[absolute]",
             Some("y") if has("[indirect],y") => "[indirect],y",
+            // The 45GS02's 32-bit pointer, `[zp],z`.
+            Some("z") if has("[indirect],z") => "[indirect],z",
             _ => return Err(None),
         };
         return Ok((mode, Some(value)));
@@ -527,12 +540,21 @@ fn choose(
             (Some("x"), None) if !has("(indirect,x)") && has("(absolute,x)") => "(absolute,x)",
             (Some("x"), None) => "(indirect,x)",
             (None, Some("y")) => "(indirect),y",
+            // A Q instruction takes `(zp)` and `(zp),z` alike.
+            (None, Some("z")) if !has("(indirect),z") && reading.quad && has("(indirect)") => {
+                "(indirect)"
+            }
             (None, Some("z")) => "(indirect),z",
             (Some("s"), Some("y")) if has("(stack,s),y") => "(stack,s),y",
             (Some("s" | "sp"), Some("y")) => "(stack-indirect),y",
             // `JMP (abs)`, or the 65C02's `(zp)`, which Isa198x names
             // `(indirect)`.
             (None, None) if !has("indirect") && has("(indirect)") => "(indirect)",
+            // On the 65CE02 and 45GS02, ca65 reads a plain `(zp)` as
+            // `(zp),z`; its 4510 table does not.
+            (None, None) if reading.plain_zp_is_z && !has("indirect") && has("(indirect),z") => {
+                "(indirect),z"
+            }
             (None, None) => "indirect",
             _ => return Err(None),
         };
@@ -578,6 +600,30 @@ fn choose(
         _ => return Err(None),
     };
     Ok((mode, Some(value)))
+}
+
+/// How a CPU's ca65 table reads an operand differently from the 6502's.
+#[derive(Clone, Copy, Default)]
+struct Reading {
+    /// A plain `(zp)` is `(zp),z`: the 65CE02's and 45GS02's tables, not
+    /// the 4510's.
+    plain_zp_is_z: bool,
+    /// The instruction is one of the 45GS02's Q instructions, which take
+    /// `q` as their register and `(zp)` and `(zp),z` alike.
+    quad: bool,
+}
+
+impl Reading {
+    fn of(cpu: Cpu, mnemonic: &str) -> Self {
+        const QUAD: &[&str] = &[
+            "ADCQ", "ANDQ", "ASLQ", "ASRQ", "BITQ", "CMPQ", "DEQ", "EORQ", "INQ", "LDQ", "LSRQ",
+            "ORQ", "ROLQ", "RORQ", "SBCQ", "STQ",
+        ];
+        Self {
+            plain_zp_is_z: matches!(cpu, Cpu::Csg65ce02 | Cpu::Mega45gs02),
+            quad: cpu == Cpu::Mega45gs02 && QUAD.contains(&mnemonic),
+        }
+    }
 }
 
 /// What `known` knows, but with a name not known yet taking no size, as in

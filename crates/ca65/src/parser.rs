@@ -612,7 +612,11 @@ impl Parser<'_, '_> {
                     return;
                 }
             }
-            Some(kinds::REGISTER) if self.next_text().eq_ignore_ascii_case("a") => {
+            // `a`, or on the 45GS02 `q`, the register an instruction acts on.
+            Some(kinds::REGISTER)
+                if self.next_text().eq_ignore_ascii_case("a")
+                    || self.next_text().eq_ignore_ascii_case("q") =>
+            {
                 self.bump_next();
             }
             Some(kinds::L_PAREN) => {
@@ -676,7 +680,8 @@ impl Parser<'_, '_> {
         self.builder.finish_node();
     }
 
-    /// `[address]` or `[address],y`.
+    /// `[address]` or `[address],y`, and on the 45GS02 `[address],z`, where
+    /// `z` is a register only on that CPU, as the lexer's mode says.
     fn long_indirect(&mut self) {
         self.trivia();
         self.builder.start_node(kinds::LONG_INDIRECT);
@@ -684,7 +689,7 @@ impl Parser<'_, '_> {
         self.expression();
         if self.require(kinds::R_BRACK, "expected `]`") && self.next_kind() == Some(kinds::COMMA) {
             self.bump_next();
-            self.require_register(&["y"], "expected `y`");
+            self.require_register(&["y", "z"], "expected `y`");
         }
         self.builder.finish_node();
     }

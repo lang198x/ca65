@@ -18,7 +18,8 @@ impl Operand {
         token(&self.0, kinds::ADDR_SIZE)
     }
 
-    /// Returns `a` when the operand is the accumulator.
+    /// Returns `a` when the operand is the accumulator, or `q` when it is
+    /// the 45GS02's 32-bit Q register.
     #[must_use]
     pub fn accumulator(&self) -> Option<SyntaxToken> {
         token(&self.0, kinds::REGISTER)
