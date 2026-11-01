@@ -15,7 +15,7 @@ lang198x-syntax = "0.1.3"
 # copy, so its releases must still match. CI resolves the newest.
 asm198x-ir = { version = ">=0.0.72, <0.1", optional = true }
 # The instruction forms lowering chooses from; asm198x-ir names its types.
-isa198x = { version = "0.1.8", optional = true }
+isa198x = { version = "0.1.9", optional = true }
 
 [features]
 # Lowering to asm198x-ir, for the Asm198x back end. Off by default, so tools
