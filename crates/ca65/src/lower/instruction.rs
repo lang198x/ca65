@@ -74,9 +74,11 @@ pub fn instruction(
         (Cpu::Csg65ce02, "EOM") => "NOP".to_owned(),
         // ca65 and Isa198x name three of the 6502's undocumented
         // instructions differently.
-        (Cpu::Nmos6502X, "ALR") => "ASR".to_owned(),
-        (Cpu::Nmos6502X, "AXS") => "SBX".to_owned(),
-        (Cpu::Nmos6502X, "LAX") if operands_immediate(instruction) => "LXA".to_owned(),
+        (Cpu::Nmos6502X | Cpu::Dtv6502, "ALR") => "ASR".to_owned(),
+        (Cpu::Nmos6502X | Cpu::Dtv6502, "AXS") => "SBX".to_owned(),
+        (Cpu::Nmos6502X | Cpu::Dtv6502, "LAX") if operands_immediate(instruction) => {
+            "LXA".to_owned()
+        }
         (_, "INA") if cpu.is_mnemonic("INA") => "INC".to_owned(),
         (_, "DEA") if cpu.is_mnemonic("DEA") => "DEC".to_owned(),
         _ => written.clone(),
@@ -226,7 +228,8 @@ fn operands_immediate(instruction: &Instruction) -> bool {
 pub fn sets(cpu: Cpu) -> (&'static InstructionSet, Option<&'static InstructionSet>) {
     let extension = match cpu {
         Cpu::Nmos6502X => Some(&isa198x::nmos6502_undocumented::SET),
-        Cpu::Dtv6502 => Some(&isa198x::c64dtv2::SET),
+        // ca65 gives the DTV `ANC`, which ACME does not; Isa198x records both.
+        Cpu::Dtv6502 => Some(&isa198x::c64dtv2::CA65_SET),
         Cpu::Mos65sc02 => Some(&isa198x::mos65c02::SET),
         Cpu::Mos65c02 => Some(&isa198x::mos65c02::ROCKWELL_SET),
         Cpu::Wdc65c02 => Some(&isa198x::mos65c02::WDC_SET),

@@ -800,9 +800,9 @@ fn settings_report_the_cpu_stack_and_constructors_export() {
 
     // Another CPU is not lowered yet, which is not the same as refused.
     for source in [
-        ".setcpu \"6502DTV\"\n",
+        ".setcpu \"sweet16\"\n",
         ".setcpu \"m740\"\n",
-        ".pdtv\n",
+        ".psweet16\n",
         ".dbg line, \"t.s\", 3\n",
         ".dbg sym, \"x\"\n",
     ] {
@@ -811,7 +811,7 @@ fn settings_report_the_cpu_stack_and_constructors_export() {
     }
     let problem = first(".setcpu \"nope\"\n").err().expect("unknown");
     assert_eq!(problem.kind(), DiagnosticKind::Invalid);
-    // The 6502's relatives and the HuC6280 are lowered.
+    // The 6502's relatives, the HuC6280 and the 65816 are lowered.
     for source in [
         ".setcpu \"65C02\"\n",
         ".pc02\n",
@@ -819,6 +819,7 @@ fn settings_report_the_cpu_stack_and_constructors_export() {
         ".pce02\n",
         ".setcpu \"huc6280\"\n",
         ".p816\n",
+        ".pdtv\n",
     ] {
         assert!(first(source).is_ok(), "{source}");
     }
