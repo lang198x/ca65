@@ -186,7 +186,17 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
         .and_then(|l| l.name())
         .map(|name| name.text());
     labels.extend(label.clone());
-    let on_line = OnLine { known, label };
+    // ca65 uses the widths only on the 65816.
+    let widths = if line.cpu() == crate::Cpu::Wdc65816 {
+        line.widths()
+    } else {
+        crate::Widths::default()
+    };
+    let on_line = OnLine {
+        known,
+        label,
+        widths,
+    };
     let known: &dyn Known = &on_line;
     let mut scope = None;
     let mut segment = None;
@@ -313,6 +323,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
 struct OnLine<'a> {
     known: &'a dyn Known,
     label: Option<String>,
+    widths: crate::Widths,
 }
 
 impl OnLine<'_> {
@@ -348,6 +359,10 @@ impl Known for OnLine<'_> {
 
     fn read(&self, name: &str) {
         self.known.read(name);
+    }
+
+    fn widths(&self) -> crate::Widths {
+        self.widths
     }
 }
 
@@ -670,6 +685,19 @@ fn command_op(
             }
             out.push(Ir::Num(0));
             sized(1, false, out)
+        }
+        // On the 65816, ca65 lays down an address's low word, so a bank
+        // byte, or a value out of range, is dropped.
+        ".addr" if line.cpu() == crate::Cpu::Wdc65816 => {
+            let values = lowered(at_least_one(values())?)?;
+            sized(
+                2,
+                false,
+                values
+                    .into_iter()
+                    .map(|v| Ir::Bin(BinOp::And, Box::new(v), Box::new(Ir::Num(0xFFFF))))
+                    .collect(),
+            )
         }
         ".word" | ".addr" => sized(2, false, lowered(at_least_one(values())?)?),
         ".dbyt" => sized(2, true, lowered(at_least_one(values())?)?),

@@ -377,6 +377,94 @@ fn every_measured_huc6280_line_matches_ca65() {
     }
 }
 
+/// Lines measured on ca65 V2.19 under `.p816` and `.org 0`, with both
+/// registers 8 bits wide. `None` is a line ca65 refused, with its message,
+/// or one lowering does not handle yet.
+const MEASURED_65816: &[(&str, Option<&str>)] = &[
+    ("cop", None), // ca65: 02, a form Isa198x lacks; refused as not lowered
+    ("cop #$12", Some("0212")),
+    ("cop $12", Some("0212")),
+    ("wdm", None), // Illegal addressing mode
+    ("wdm #$12", Some("4212")),
+    ("wdm $12", Some("4212")),
+    ("brk", Some("00")),
+    ("brk #$12", None), // ca65: 0012, a form Isa198x lacks; refused as not lowered
+    ("brk $12", None),  // ca65: 0012, a form Isa198x lacks; refused as not lowered
+    ("jsl $1234", Some("22341200")),
+    ("jsl $123456", Some("22563412")),
+    ("jml $1234", Some("5c341200")),
+    ("jml $123456", Some("5c563412")),
+    ("jml [$1234]", Some("dc3412")),
+    ("jmp [$1234]", Some("dc3412")),
+    ("jmp [$12]", Some("dc1200")),
+    ("jmp $123456", None), // Illegal addressing mode
+    ("jmp f:$1234", None), // Illegal addressing mode
+    ("jsr $123456", None), // Illegal addressing mode
+    ("jsr ($1234,x)", Some("fc3412")),
+    ("lda $123456", Some("af563412")),
+    ("lda $123456,x", Some("bf563412")),
+    ("lda $123456,y", None), // Range error: constant too large for assumed near address.
+    ("lda f:$12", Some("af120000")),
+    ("lda f:$12,x", Some("bf120000")),
+    ("lda a:$12", Some("ad1200")),
+    ("lda [$12]", Some("a712")),
+    ("lda [$12],y", Some("b712")),
+    ("lda [$1234]", None), // Range error (4660 not in [0..255])
+    ("lda $12,s", Some("a312")),
+    ("lda ($12,s),y", Some("b312")),
+    ("lda $1234,s", None), // Range error (4660 not in [0..255])
+    ("sta [$12]", Some("8712")),
+    ("pei ($12)", Some("d412")),
+    ("pei $12", None), // Illegal addressing mode
+    ("pea $1234", Some("f43412")),
+    ("pea #$1234", None), // Illegal addressing mode
+    ("per 3", Some("620000")),
+    ("brl 3", Some("820000")),
+    ("mvn $01,$02", Some("540000")),
+    ("mvn #$01,#$02", Some("540201")),
+    ("mvn $010000,$020000", Some("540201")),
+    ("mvp #1,#2", Some("440201")),
+    ("mvn $01", None), // Expected `,` but found `end-of-line`
+    ("rep #$30", Some("c230")),
+    ("sep #$30", Some("e230")),
+    ("rep $30", None),    // Illegal addressing mode
+    ("lda #$1234", None), // Range error (4660 not in [0..255])
+    ("ldx #$1234", None), // Range error (4660 not in [0..255])
+    ("bit #$12", Some("8912")),
+    ("xba", Some("eb")),
+    ("xce", Some("fb")),
+    ("tcd", Some("5b")),
+    ("rtl", Some("6b")),
+    ("stz $123456", None), // Illegal addressing mode
+    ("ora ($12)", Some("1212")),
+    ("lda ($1234)", None),     // Illegal addressing mode
+    ("lda (a:$12),y", None),   // Expected an expression but found `a:`
+    ("mvn $01,$02,$03", None), // Expected `end-of-line` but found `,`
+    ("mvn z:#$01,#$02", None), // Expected an expression but found `z:`
+    ("mvn ($010000),$020000", Some("540201")),
+    ("cop #$12,1", None),    // Expected `end-of-line` but found `,`
+    ("cop $1234", None),     // Illegal addressing mode
+    ("cop ($12)", None),     // Illegal addressing mode
+    ("cop z:#$12", None),    // Illegal addressing mode
+    ("wdm $12,1", None),     // Illegal addressing mode
+    ("jml [$1234],y", None), // Illegal addressing mode
+    ("lda [$12],x", None),   // Expected `Y` but found `X`
+    ("lda z:[$12]", None),   // Illegal addressing mode
+    ("lda ($12,s),x", None), // Expected `Y` but found `X`
+    ("lda a:$12,s", None),   // Illegal addressing mode
+];
+
+#[test]
+fn every_measured_65816_line_matches_ca65() {
+    let profile = Profile::CA65_2_19_6502.with_cpu(Cpu::Wdc65816);
+    for &(source, hex) in MEASURED_65816 {
+        let got = lowered_on(profile, source, &Names::default())
+            .ok()
+            .and_then(|op| encode_on(Cpu::Wdc65816, &op, &|_| None));
+        assert_eq!(got.as_deref(), hex, "{source}");
+    }
+}
+
 #[test]
 fn a_4510_instruction_is_not_a_6502_one() {
     assert!(lowered("lda ($12),z", &Names::default()).is_err());
@@ -386,11 +474,11 @@ fn a_4510_instruction_is_not_a_6502_one() {
 
 #[test]
 fn an_instruction_for_a_cpu_not_lowered_yet_is_refused_by_name() {
-    let profile = Profile::CA65_2_19_6502.with_cpu(Cpu::Wdc65816);
+    let profile = Profile::CA65_2_19_6502.with_cpu(Cpu::Dtv6502);
     let Err(error) = lowered_on(profile, "nop", &Names::default()) else {
-        panic!("the 65816 is not lowered yet");
+        panic!("the 6502DTV is not lowered yet");
     };
-    assert!(error.contains("`65816`"), "{error}");
+    assert!(error.contains("`6502DTV`"), "{error}");
     assert!(error.contains("not lowered yet"), "{error}");
 }
 

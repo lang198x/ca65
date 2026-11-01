@@ -99,6 +99,22 @@ pub fn instruction(
     if has("immediate,zeropage") {
         return test(&mnemonic, &operands, range, known);
     }
+    // ca65 gives the 65816's `BRK` a signature byte too, which Isa198x
+    // has no form for yet.
+    if cpu == Cpu::Wdc65816 && mnemonic == "BRK" && !operands.is_empty() {
+        return Err(super::expr::unsupported(
+            range,
+            "`BRK` with a signature byte",
+        ));
+    }
+    if has("block-move") {
+        return block_move(&mnemonic, &operands, range, known);
+    }
+    // The 65816's `COP` and `WDM` take a signature byte, written as an
+    // immediate or as a zero-page address.
+    if has("signature") {
+        return signature(&mnemonic, &operands, range, known);
+    }
     // The HuC6280's `TAMn` and `TMAn` are `TAM` and `TMA` with bit `n` set.
     if cpu == Cpu::HuC6280
         && let Some((name, bit)) = mapping_register(&mnemonic)
@@ -145,12 +161,30 @@ pub fn instruction(
         }
         Some(operand) => choose(operand, &has, known).map_err(|e| e.unwrap_or_else(illegal))?,
     };
-    // `PHW #value` pushes a word.
-    let mode = if mode == "immediate" && has("immediate16") {
-        "immediate16"
-    } else {
-        mode
+    let mode = match (cpu, mode) {
+        // `PHW #value` pushes a word.
+        (Cpu::Csg65ce02 | Cpu::Csg4510, "immediate") if has("immediate16") => "immediate16",
+        // On the 65816, an immediate is as wide as its register.
+        (Cpu::Wdc65816, "immediate") if has("immediate16") => {
+            let widths = known.widths();
+            let bits = if matches!(mnemonic.as_str(), "LDX" | "LDY" | "CPX" | "CPY") {
+                widths.index()
+            } else {
+                widths.accumulator()
+            };
+            if bits == 16 {
+                "immediate16"
+            } else {
+                "immediate"
+            }
+        }
+        _ => mode,
     };
+    // ca65 V2.19 gives the 65816's `JMP` a long form only with the
+    // `long_jsr_jmp_rts` feature, which is off; `JML` is the long jump.
+    if cpu == Cpu::Wdc65816 && mnemonic == "JMP" && mode == "long" {
+        return Err(illegal());
+    }
     let form = find(mode).ok_or_else(illegal)?;
     // ca65 lets `TMA` read one mapping register at a time, so its value
     // must have one bit set, or none. A value not known yet is left alone.
@@ -165,7 +199,7 @@ pub fn instruction(
     // shared encoder counts from the end of the instruction, as the
     // 65816's do; the target carries the difference. ACME does the same.
     let value = match (form.mode, value) {
-        ("relative16", Some(target)) => {
+        ("relative16", Some(target)) if cpu != Cpu::Wdc65816 => {
             Some(Ir::Bin(BinOp::Add, Box::new(target), Box::new(Ir::Num(1))))
         }
         (_, value) => value,
@@ -199,6 +233,7 @@ pub fn sets(cpu: Cpu) -> (&'static InstructionSet, Option<&'static InstructionSe
         Cpu::Csg65ce02 => Some(&isa198x::csg65ce02::SET),
         Cpu::Csg4510 => Some(&isa198x::csg65ce02::CSG4502_SET),
         Cpu::HuC6280 => Some(&isa198x::huc6280::SET),
+        Cpu::Wdc65816 => Some(&isa198x::mos65816::SET),
         _ => None,
     };
     (&isa198x::mos6502::SET, extension)
@@ -300,6 +335,98 @@ fn test(
     })
 }
 
+/// The 65816's block moves, `MVN` and `MVP`, as ca65's `PutBlockMove`
+/// reads them: a source and a destination, each a bank byte written as an
+/// immediate, or an address whose bank byte is taken. They are laid down
+/// destination first.
+fn block_move(
+    mnemonic: &str,
+    operands: &[Operand],
+    range: TextRange,
+    known: &dyn Known,
+) -> Result<Operation, Diagnostic> {
+    let [source, destination] = operands else {
+        let (at, message) = match operands.get(2) {
+            Some(extra) => (extra.syntax().text_range(), "expected the end of the line"),
+            None => (range, "expected `,`"),
+        };
+        return Err(invalid(at, message));
+    };
+    let bank = |operand: &Operand| match operand.immediate() {
+        Some(immediate) if operand.address_size().is_none() => {
+            let value = immediate
+                .expr()
+                .ok_or_else(|| invalid(range, "expected a value"))?;
+            expr::expression(&value, known)
+        }
+        Some(_) => Err(invalid(
+            operand.syntax().text_range(),
+            "this addressing mode is not one this instruction has",
+        )),
+        None => plain(operand, known).map(|value| Ir::Bank(Box::new(value))),
+    };
+    Ok(Operation::Instruction {
+        mnemonic: mnemonic.to_owned(),
+        mode: "block-move",
+        operands: vec![bank(destination)?, bank(source)?],
+    })
+}
+
+/// The 65816's `COP` or `WDM` with its signature byte, written as an
+/// immediate or a zero-page address. ca65 also takes `COP` with none, as
+/// one byte, which Isa198x has no form for yet.
+fn signature(
+    mnemonic: &str,
+    operands: &[Operand],
+    range: TextRange,
+    known: &dyn Known,
+) -> Result<Operation, Diagnostic> {
+    let illegal = |range| {
+        invalid(
+            range,
+            "this addressing mode is not one this instruction has",
+        )
+    };
+    let operand = match operands {
+        [operand] => operand,
+        [] if mnemonic == "COP" => {
+            return Err(super::expr::unsupported(
+                range,
+                "`COP` with no signature byte",
+            ));
+        }
+        [] => return Err(illegal(range)),
+        [_, extra, ..] => {
+            return Err(invalid(
+                extra.syntax().text_range(),
+                "expected the end of the line",
+            ));
+        }
+    };
+    let value = match operand.immediate() {
+        Some(immediate) if operand.address_size().is_none() => immediate
+            .expr()
+            .ok_or_else(|| invalid(range, "expected a value"))?,
+        Some(_) => return Err(illegal(operand.syntax().text_range())),
+        None => {
+            let lowered = plain(operand, known)?;
+            if operand.indirect().is_some() || expr::size(&lowered, known) != Size::Zero {
+                return Err(illegal(operand.syntax().text_range()));
+            }
+            return Ok(Operation::Instruction {
+                mnemonic: mnemonic.to_owned(),
+                mode: "signature",
+                operands: vec![lowered],
+            });
+        }
+    };
+    Ok(Operation::Instruction {
+        mnemonic: mnemonic.to_owned(),
+        mode: "signature",
+        operands: vec![expr::expression(&value, known)?],
+    })
+}
+
 /// A value written as ca65's `Expression` reads it, where `(1)` is a value
 /// in parentheses, not an indirect address, and nothing else is allowed.
 fn plain(operand: &Operand, known: &dyn Known) -> Result<Ir, Diagnostic> {
@@ -371,8 +498,19 @@ fn choose(
         }
         return Ok(("immediate", Some(lowered(immediate.expr())?)));
     }
-    if operand.long_indirect().is_some() {
-        return Err(None);
+    if let Some(long) = operand.long_indirect() {
+        if forced_on_other {
+            return Err(None);
+        }
+        let value = lowered(long.expr())?;
+        let mode = match register(long.outer_register()).as_deref() {
+            None if has("[indirect]") => "[indirect]",
+            // `JML [abs]` and `JMP [abs]`.
+            None if has("[absolute]") => "[absolute]",
+            Some("y") if has("[indirect],y") => "[indirect],y",
+            _ => return Err(None),
+        };
+        return Ok((mode, Some(value)));
     }
     if let Some(indirect) = operand.indirect() {
         if forced_on_other {
@@ -387,6 +525,7 @@ fn choose(
             (Some("x"), None) => "(indirect,x)",
             (None, Some("y")) => "(indirect),y",
             (None, Some("z")) => "(indirect),z",
+            (Some("s"), Some("y")) if has("(stack,s),y") => "(stack,s),y",
             (Some("s" | "sp"), Some("y")) => "(stack-indirect),y",
             // `JMP (abs)`, or the 65C02's `(zp)`, which Isa198x names
             // `(indirect)`.
@@ -412,19 +551,27 @@ fn choose(
         None => expr::size(&value, known),
     };
     let index = register(operand.index().and_then(|i| i.register()));
-    let (zero, absolute) = match index.as_deref() {
-        Some("x") => ("zeropage,x", "absolute,x"),
-        Some("y") => ("zeropage,y", "absolute,y"),
+    // The 65816's long forms: an address with a bank byte, or `f:`.
+    let (zero, absolute, long) = match index.as_deref() {
+        Some("x") => ("zeropage,x", "absolute,x", "long,x"),
+        Some("y") => ("zeropage,y", "absolute,y", ""),
+        // `offset,s`, the 65816's stack-relative form, takes one byte
+        // whatever size the offset has.
+        Some("s") if forced.is_none() && has("stack,s") => {
+            return Ok(("stack,s", Some(value)));
+        }
         Some(_) => return Err(None),
         None if forced.is_none() && has("relative") => return Ok(("relative", Some(value))),
         None if forced.is_none() && has("relative16") => return Ok(("relative16", Some(value))),
-        None => ("zeropage", "absolute"),
+        None => ("zeropage", "absolute", "long"),
     };
     let mode = match size {
         Size::Zero if has(zero) => zero,
         // `z:` asks for the zero page, and there is no other choice.
         Size::Zero if forced.is_some() => return Err(None),
         Size::Zero | Size::Absolute if has(absolute) => absolute,
+        // A smaller address fits a long form too, as `JSL` takes it.
+        Size::Zero | Size::Absolute | Size::Far if has(long) => long,
         _ => return Err(None),
     };
     Ok((mode, Some(value)))

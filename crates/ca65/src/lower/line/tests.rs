@@ -744,7 +744,7 @@ fn what_is_not_lowered_yet_says_so() {
     for source in [
         ".byte .cpu\n",
         ".segment \"X\": dword\n",
-        ".p816\n",
+        ".psweet16\n",
         ".proc p: far\n",
     ] {
         let mut expander = Expander::new(source, profile).expect("parses");
@@ -803,7 +803,6 @@ fn settings_report_the_cpu_stack_and_constructors_export() {
         ".setcpu \"6502DTV\"\n",
         ".setcpu \"m740\"\n",
         ".pdtv\n",
-        ".p816\n",
         ".dbg line, \"t.s\", 3\n",
         ".dbg sym, \"x\"\n",
     ] {
@@ -819,6 +818,7 @@ fn settings_report_the_cpu_stack_and_constructors_export() {
         ".p02x\n",
         ".pce02\n",
         ".setcpu \"huc6280\"\n",
+        ".p816\n",
     ] {
         assert!(first(source).is_ok(), "{source}");
     }
@@ -984,4 +984,111 @@ fn a_macro_makes_members_inside_a_record() {
     );
     // After the record, the lines read as they would anywhere.
     assert_eq!(found.last(), Some(&Ok(None)));
+}
+
+/// What each line of `source` makes that shows the 65816's widths: an
+/// instruction's mode, or the values of a `.byte`, in order. An equate's
+/// value is known from its line on.
+fn widths_shown(source: &str) -> Vec<String> {
+    let profile = Profile::CA65_2_19_6502;
+    let mut expander = Expander::new(source, profile).expect("parses");
+    let mut mini = Mini::default();
+    let mut shown = Vec::new();
+    while let Some(active) = expander.next_line(&mut mini) {
+        let lowered =
+            line(&active, profile, &mini).unwrap_or_else(|d| panic!("{source:?}: {}", d.message()));
+        for item in lowered.items {
+            match (item.label, item.op) {
+                (Some(label), Some(Operation::Equ(value))) => {
+                    let value = mini.value(&value).expect("a constant");
+                    mini.known.insert(label, Value::Constant(value));
+                }
+                (_, Some(Operation::Instruction { mode, .. })) => shown.push(mode.to_owned()),
+                (_, Some(Operation::Sized { values, .. })) => shown.extend(
+                    values
+                        .iter()
+                        .map(|v| mini.value(v).expect("a constant").to_string()),
+                ),
+                _ => {}
+            }
+        }
+    }
+    shown
+}
+
+#[test]
+fn the_65816s_widths_size_its_immediates() {
+    // Measured on ca65 V2.19, as the bytes of each line.
+    let cases: &[(&str, &[&str])] = &[
+        (
+            // a9 01, a9 01 00, a2 01, a2 01 00, a9 01
+            ".p816\nlda #1\n.a16\nlda #1\nldx #1\n.i16\nldx #1\n.a8\nlda #1\n",
+            &[
+                "immediate",
+                "immediate16",
+                "immediate",
+                "immediate16",
+                "immediate",
+            ],
+        ),
+        (
+            // c2 30, a9 01 00, a2 01 00, e2 20, a9 01, a2 01 00
+            ".p816\n.smart\nrep #$30\nlda #1\nldx #1\nsep #$20\nlda #1\nldx #1\n",
+            &[
+                "immediate",
+                "immediate16",
+                "immediate16",
+                "immediate",
+                "immediate",
+                "immediate16",
+            ],
+        ),
+        // Without `.smart`, `rep` changes nothing: c2 30, a9 01.
+        (".p816\nrep #$30\nlda #1\n", &["immediate", "immediate"]),
+        // e2 30, c2 30, a9 01.
+        (
+            ".p816\n.smart +\nsep #$30\n.smart -\nrep #$30\nlda #1\n",
+            &["immediate", "immediate", "immediate"],
+        ),
+        // A value not known yet changes nothing: c2 20, a9 01.
+        (
+            ".p816\n.smart\nrep #v\nv = $20\nlda #1\n",
+            &["immediate", "immediate"],
+        ),
+        // c2 20, a9 01 00.
+        (
+            ".p816\n.smart\nv = $20\nrep #v\nlda #1\n",
+            &["immediate", "immediate16"],
+        ),
+        // The widths outlast another CPU, which ignores them: a9 01, a9 01 00.
+        (
+            ".p816\n.a16\n.p02\nlda #1\n.p816\nlda #1\n",
+            &["immediate", "immediate16"],
+        ),
+        // `.asize` and `.isize` are 8 but on the 65816: 10 08 08.
+        (
+            ".p816\n.a16\n.byte .asize, .isize\n.p02\n.byte .asize\n",
+            &["16", "8", "8"],
+        ),
+    ];
+    for (source, want) in cases {
+        assert_eq!(widths_shown(source), *want, "{source:?}");
+    }
+}
+
+#[test]
+fn the_width_commands_are_only_for_the_65816() {
+    for source in [".a8\n", ".a16\n", ".i8\n", ".i16\n"] {
+        let problem = first(source).err().expect(source);
+        assert_eq!(problem.message(), "Command is only valid in 65816 mode");
+    }
+}
+
+#[test]
+fn the_65816s_addr_keeps_the_low_word() {
+    // Measured on ca65 V2.19: ff ff 01 00 on the 65816, and a range error
+    // on the 6502.
+    let (bytes, _) = pass(".p816\n.addr -65537, 65537\n", HashMap::new()).expect("assembles");
+    assert_eq!(bytes, [0xFF, 0xFF, 0x01, 0x00]);
+    assert!(pass(".addr 65537\n", HashMap::new()).is_err());
 }
