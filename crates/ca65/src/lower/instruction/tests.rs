@@ -474,11 +474,11 @@ fn a_4510_instruction_is_not_a_6502_one() {
 
 #[test]
 fn an_instruction_for_a_cpu_not_lowered_yet_is_refused_by_name() {
-    let profile = Profile::CA65_2_19_6502.with_cpu(Cpu::Dtv6502);
+    let profile = Profile::CA65_2_19_6502.with_cpu(Cpu::M740);
     let Err(error) = lowered_on(profile, "nop", &Names::default()) else {
-        panic!("the 6502DTV is not lowered yet");
+        panic!("the M740 is not lowered yet");
     };
-    assert!(error.contains("`6502DTV`"), "{error}");
+    assert!(error.contains("`m740`"), "{error}");
     assert!(error.contains("not lowered yet"), "{error}");
 }
 
