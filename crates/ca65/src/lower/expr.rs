@@ -152,7 +152,10 @@ fn function(call: &CallExpr, range: TextRange, known: &dyn Known) -> Result<Ir, 
         // The name is not read, so it is not a use.
         ".addrsize" => {
             let name = named(call, range, "`.addrsize`")?;
-            let size = match known.name(&name) {
+            let size = match known
+                .address_size(&name)
+                .map_or_else(|| known.name(&name), Value::Opaque)
+            {
                 Value::Unknown => {
                     return Err(invalid(range, &format!("unknown symbol or scope `{name}`")));
                 }

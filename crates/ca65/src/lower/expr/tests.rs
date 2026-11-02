@@ -359,6 +359,12 @@ impl Known for Clock {
     fn time(&self) -> i64 {
         1_700_000_000
     }
+
+    /// `seg`, as `.proc seg: far` would declare it, though its value is in
+    /// a zero-page segment.
+    fn address_size(&self, name: &str) -> Option<Size> {
+        (name == "seg").then_some(Size::Far)
+    }
 }
 
 /// `.addrsize`, `.cpu`, `.version` and `.time`, as ca65 V2.19 gives them.
@@ -373,7 +379,8 @@ fn the_functions_that_describe_the_assembly() {
     assert_eq!(value(".addrsize(z)"), Ok(1));
     assert_eq!(value(".addrsize(w)"), Ok(2));
     assert_eq!(value(".addrsize(far)"), Ok(3));
-    assert_eq!(value(".addrsize(seg)"), Ok(1));
+    // A size the name was declared with comes before its value's.
+    assert_eq!(value(".addrsize(seg)"), Ok(3));
     assert_eq!(value(".addrsize(m)"), Ok(2));
     assert_eq!(value(".cpu"), Ok(0x1032));
     assert_eq!(value(".version"), Ok(0x0213));

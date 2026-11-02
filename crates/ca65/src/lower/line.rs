@@ -156,6 +156,12 @@ pub enum Scope {
         name: Option<String>,
         /// Whether `.proc` opened it, so only `.endproc` closes it.
         procedure: bool,
+        /// The address size written on a named `.proc`, as in
+        /// `.proc p: far`. It is the size of the name `p`, which
+        /// `.addrsize(p)` gives and which a scope inside sizes `p` by; the
+        /// labels inside keep their segment's size. A size on `.scope`
+        /// changes nothing in ca65, so it is `None` there.
+        size: Option<Size>,
     },
     /// `.endscope` or `.endproc`: the innermost scope closes. The command
     /// must match the one that opened it. A label on the line belongs to
@@ -244,6 +250,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
                     if let Scope::Open {
                         name: Some(name),
                         procedure: true,
+                        ..
                     } = &change
                     {
                         labels.push(name.clone());
@@ -417,6 +424,10 @@ impl Known for OnLine<'_> {
 
     fn bank(&self, value: &Ir) -> Option<Ir> {
         self.known.bank(value)
+    }
+
+    fn address_size(&self, name: &str) -> Option<Size> {
+        self.known.address_size(name)
     }
 
     fn read(&self, name: &str) {
@@ -690,11 +701,10 @@ fn constructor(command: &Command, word: &str, known: &dyn Known) -> Result<Visib
 /// `.proc`, as ca65 does.
 ///
 /// An address size after the name, as in a C compiler's `.proc _main: near`,
-/// is checked as ca65 V2.19 checks it on `cpu`. An absolute one is what a
-/// label has anyway; a zero-page one, or `far` on the 65816, changes how
-/// the label is sized, and is not lowered yet.
+/// is checked as ca65 V2.19 checks it on `cpu`: `far` only on the 65816,
+/// and `long` and `dword` never. On a named `.proc` it is the size of the
+/// name, which [`Scope::Open`] carries. On `.scope` it changes nothing.
 fn scope_change(command: &Command, cpu: crate::Cpu) -> Result<Option<Scope>, Diagnostic> {
-    let range = command.syntax().text_range();
     let word = command
         .word()
         .map(|w| w.text().to_ascii_lowercase())
@@ -702,22 +712,19 @@ fn scope_change(command: &Command, cpu: crate::Cpu) -> Result<Option<Scope>, Dia
     let procedure = word == ".proc" || word == ".endproc";
     match word.as_str() {
         ".scope" | ".proc" => {
+            let mut written = None;
             if let Some(size) = command.address_size() {
                 let text = size.text().to_ascii_lowercase();
-                match text.as_str() {
-                    "near" | "abs" | "absolute" => {}
-                    "far" if cpu == crate::Cpu::Wdc65816 => {
-                        return Err(unsupported(range, &format!("a far `{word}`")));
-                    }
+                written = Some(match text.as_str() {
+                    "near" | "abs" | "absolute" => Size::Absolute,
+                    "far" if cpu == crate::Cpu::Wdc65816 => Size::Far,
                     "far" | "long" | "dword" => {
                         return Err(invalid(
                             size.text_range(),
                             "Invalid address size specification for current CPU",
                         ));
                     }
-                    "zp" | "direct" | "zeropage" => {
-                        return Err(unsupported(range, &format!("a zero-page `{word}`")));
-                    }
+                    "zp" | "direct" | "zeropage" => Size::Zero,
                     _ => {
                         return Err(invalid(
                             size.text_range(),
@@ -727,11 +734,13 @@ fn scope_change(command: &Command, cpu: crate::Cpu) -> Result<Option<Scope>, Dia
                             ),
                         ));
                     }
-                }
+                });
             }
             let name = command.name().map(|name| name.text());
+            let procedure = procedure && name.is_some();
             Ok(Some(Scope::Open {
-                procedure: procedure && name.is_some(),
+                size: written.filter(|_| procedure),
+                procedure,
                 name,
             }))
         }

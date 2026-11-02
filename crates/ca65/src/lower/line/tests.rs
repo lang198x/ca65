@@ -669,7 +669,11 @@ type Reported = (Vec<(Option<String>, bool)>, Option<Scope>);
 
 /// The change to the scopes `source`'s first line makes, and its items.
 fn scope(source: &str) -> Result<Reported, String> {
-    let profile = Profile::CA65_2_19_6502;
+    scope_on(source, Profile::CA65_2_19_6502)
+}
+
+/// As [`scope`], for `profile`'s CPU.
+fn scope_on(source: &str, profile: Profile) -> Result<Reported, String> {
     let mut expander = Expander::new(source, profile).expect("parses");
     let mut mini = Mini::default();
     let active = expander.next_line(&mut mini).expect("a line");
@@ -687,6 +691,7 @@ fn scope_commands_are_reported_after_the_lines_items() {
     let open = |name: Option<&str>, procedure| Scope::Open {
         name: name.map(str::to_owned),
         procedure,
+        size: None,
     };
     let label = |n: &str| (Some(n.to_owned()), false);
     assert_eq!(
@@ -716,6 +721,21 @@ fn scope_commands_are_reported_after_the_lines_items() {
         Ok((vec![], Some(Scope::Close { procedure: true })))
     );
     assert_eq!(scope("nop\n"), Ok((vec![(None, true)], None)));
+    // A named `.proc` carries the size written on it, which is the size of
+    // its name. ca65 accepts one on `.scope`, where it changes nothing.
+    let on = |source: &str, cpu| match scope_on(source, Profile::CA65_2_19_6502.with_cpu(cpu)) {
+        Ok((_, Some(Scope::Open { size, .. }))) => size,
+        other => panic!("{source}: {other:?}"),
+    };
+    let sized = |source: &str| on(source, crate::Cpu::Mos6502);
+    assert_eq!(sized(".proc p: zp\n"), Some(Size::Zero));
+    assert_eq!(sized(".proc p: direct\n"), Some(Size::Zero));
+    assert_eq!(sized(".proc p: abs\n"), Some(Size::Absolute));
+    assert_eq!(on(".proc p: far\n", crate::Cpu::Wdc65816), Some(Size::Far));
+    assert_eq!(sized(".scope s: zp\n"), None);
+    assert_eq!(sized(".proc p\n"), None);
+    // `far` only on the 65816, as ca65 checks it.
+    assert!(scope(".proc p: far\n").is_err());
 }
 
 /// The change to the segment `source`'s first line makes.
@@ -911,11 +931,7 @@ fn ca65_refuses_a_label_before_a_scope() {
 #[test]
 fn what_is_not_lowered_yet_says_so() {
     let profile = Profile::CA65_2_19_6502;
-    for source in [
-        ".byte .bank(1)\n",
-        ".segment \"X\": dword\n",
-        ".proc p: zp\n",
-    ] {
+    for source in [".byte .bank(1)\n", ".segment \"X\": dword\n"] {
         let mut expander = Expander::new(source, profile).expect("parses");
         let mut mini = Mini::default();
         let active = expander.next_line(&mut mini).expect("a line");
@@ -1443,7 +1459,7 @@ fn debug_information_is_reported() {
 /// An address size on `.proc` or `.scope`, which a C compiler writes on
 /// every function, is checked as ca65 V2.19 checks it.
 #[test]
-fn a_procedure_may_name_an_absolute_size() {
+fn a_procedure_may_name_its_size() {
     let opened = |source: &str| {
         first(source)
             .map(|l| l.scope.is_some())
@@ -1462,17 +1478,16 @@ fn a_procedure_may_name_an_absolute_size() {
         ("long", DiagnosticKind::Invalid),
         ("dword", DiagnosticKind::Invalid),
         ("dp", DiagnosticKind::Invalid),
-        ("zeropage", DiagnosticKind::Unsupported),
     ] {
         assert_eq!(opened(&format!(".proc p: {size}\n")), Err(kind), "{size}");
     }
+    assert_eq!(opened(".proc p: zeropage\n"), Ok(true));
     // The 65816 has far addresses.
     let profile = Profile::CA65_2_19_6502.with_cpu(crate::Cpu::Wdc65816);
     let mut expander = Expander::new(".proc p: far\n", profile).expect("parses");
     let mut mini = Mini::default();
     let active = expander.next_line(&mut mini).expect("a line");
-    let problem = line(&active, profile, &mini).err().map(|d| d.kind());
-    assert_eq!(problem, Some(DiagnosticKind::Unsupported));
+    assert!(line(&active, profile, &mini).is_ok_and(|l| l.scope.is_some()));
 }
 
 /// `.case on`, which a C compiler writes, is what ca65 does anyway.
