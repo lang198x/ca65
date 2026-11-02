@@ -173,6 +173,18 @@ fn function(call: &CallExpr, range: TextRange, known: &dyn Known) -> Result<Ir, 
         // `.version`: ca65 V2.19, as ca65 encodes it.
         ".version" => return Ok(Ir::Num(0x0213)),
         ".time" => return Ok(Ir::Num(known.time())),
+        // `.bank(value)`: the bank of the area `value`'s segment runs in,
+        // which only the assembler that links can answer.
+        ".bank" => {
+            let mut args = call.args();
+            let value = match (args.next().and_then(|arg| arg.expr()), args.next()) {
+                (Some(value), None) => lower(&value, known)?,
+                _ => return Err(invalid(range, "`.bank` takes one value")),
+            };
+            return known
+                .bank(&value)
+                .ok_or_else(|| unsupported(range, "the function `.bank`"));
+        }
         ".const" => {
             let mut args = call.args();
             let value = match (args.next().and_then(|arg| arg.expr()), args.next()) {

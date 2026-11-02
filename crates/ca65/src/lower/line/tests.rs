@@ -34,6 +34,11 @@ struct Mini {
     function_reads: RefCell<Vec<(usize, String)>>,
     /// While a token function's value is lowered, how many had finished.
     in_function: Cell<Option<usize>>,
+    /// The bank every label is in, for `.bank`, as a linker would give it,
+    /// or `None` to leave `.bank` not lowered.
+    bank: Option<i64>,
+    /// Each value `.bank` was asked about.
+    banked: RefCell<Vec<Ir>>,
     /// The character map's changes, and the maps kept by `.pushcharmap`.
     charmap: HashMap<u8, u8>,
     kept: Vec<HashMap<u8, u8>>,
@@ -59,6 +64,7 @@ impl Mini {
 
     fn value(&self, expr: &Ir) -> Option<i64> {
         let lookup = |name: &str| match self.known.get(name) {
+            _ if name == BANK => self.bank,
             Some(Value::Constant(value)) => Some(*value),
             _ => self.finals.get(name).copied(),
         };
@@ -110,7 +116,16 @@ impl Known for Mini {
     fn translate(&self, character: u8) -> u8 {
         self.charmap.get(&character).copied().unwrap_or(character)
     }
+
+    /// A name for the linker to fill in, which is never a constant here.
+    fn bank(&self, value: &Ir) -> Option<Ir> {
+        self.banked.borrow_mut().push(value.clone());
+        self.bank.map(|_| Ir::Sym(BANK.to_owned()))
+    }
 }
+
+/// The name `.bank` stands for until the link.
+const BANK: &str = "\u{1}bank";
 
 impl Host for Mini {
     fn evaluate(&mut self, expr: &Expr) -> Result<i64, String> {
@@ -152,10 +167,20 @@ impl Host for Mini {
 /// One pass over `source`, given the final values from the pass before:
 /// the bytes, and every name's value.
 fn pass(source: &str, finals: HashMap<String, i64>) -> Result<(Vec<u8>, Mini), String> {
+    pass_banked(source, finals, None)
+}
+
+/// One pass, with every label in `bank` for `.bank`.
+fn pass_banked(
+    source: &str,
+    finals: HashMap<String, i64>,
+    bank: Option<i64>,
+) -> Result<(Vec<u8>, Mini), String> {
     let profile = Profile::CA65_2_19_6502;
     let mut expander = Expander::new(source, profile).map_err(|e| e.to_string())?;
     let mut mini = Mini {
         finals,
+        bank,
         ..Mini::default()
     };
     let mut bytes = Vec::new();
@@ -1460,4 +1485,39 @@ fn names_keep_their_case() {
         let problem = first(source).err().map(|d| d.kind());
         assert_eq!(problem, Some(DiagnosticKind::Unsupported), "{source}");
     }
+}
+
+/// `source` assembled with every label in bank 3, and the values `.bank`
+/// was asked about.
+fn banked(source: &str) -> Result<(String, Vec<Ir>), String> {
+    let (_, first) = pass_banked(source, HashMap::new(), Some(3))?;
+    let (bytes, mini) = pass_banked(source, first.finals, Some(3))?;
+    let hex = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    Ok((hex, mini.banked.into_inner()))
+}
+
+#[test]
+fn bank_asks_the_assembler() {
+    // The assembler answers with a name it fills in at the link.
+    let (hex, asked) = banked(".byte <.bank(h)\n.dword .bank(h+1)\nh: nop\n").expect("assembles");
+    assert_eq!(hex, "0303000000ea");
+    assert_eq!(
+        asked,
+        [
+            Ir::Sym("h".to_owned()),
+            Ir::Bin(
+                asm198x_ir::BinOp::Add,
+                Box::new(Ir::Sym("h".to_owned())),
+                Box::new(Ir::Num(1))
+            )
+        ]
+    );
+    // It is never a constant, so `.res` refuses it, as ca65 does.
+    assert!(banked(".res .bank(h)\nh: nop\n").is_err());
+    // One value, as ca65's parser requires.
+    assert!(banked(".byte <.bank()\n").is_err());
+    assert!(banked(".byte <.bank(h, h)\nh: nop\n").is_err());
+    // An assembler that does not link leaves it not lowered.
+    let refused = assemble(".byte <.bank(h)\nh: nop\n").expect_err("not lowered");
+    assert!(refused.contains("`.bank`"), "{refused}");
 }
