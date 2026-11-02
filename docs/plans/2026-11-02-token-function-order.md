@@ -1,6 +1,6 @@
 # Plan: token functions in line order
 
-**Status:** Proposed again 2026-11-02, for
+**Status:** Agreed 2026-11-02 as option 2, for
 [ca65#52](https://github.com/lang198x/ca65/issues/52).
 **Binding records:** Lang198x's
 [shared syntax layer decision](https://github.com/lang198x/lang198x/blob/main/decisions/shared-syntax-layer.md)
@@ -91,7 +91,7 @@ So two things need to change:
 only by adding to it. Each new method has a default that keeps today's
 behaviour, so a host that does not care about `.ref` changes nothing.
 
-## Settled, if option 2 is agreed
+## Settled
 
 - **The expander counts finished functions.** As it runs a line's token
   functions, the expander counts each one that finishes, including one
