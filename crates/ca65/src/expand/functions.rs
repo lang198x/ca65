@@ -79,15 +79,18 @@ pub(super) fn any(pieces: &[Piece]) -> bool {
     pieces.iter().any(|piece| is_function(piece, false))
 }
 
-/// Whether `line` calls a token function, as written.
+/// Whether `line` calls a token function, as written, before any `.end`,
+/// after which ca65 reads nothing.
 pub(super) fn calls(line: &crate::ast::Line) -> bool {
     use crate::ast::View;
     line.syntax()
         .descendants()
         .filter_map(lang198x_syntax::SyntaxElement::into_token)
+        .filter(|token| token.kind() == kinds::CONTROL)
+        .take_while(|token| !token.text().eq_ignore_ascii_case(".end"))
         .any(|token| {
             let named = |names: &[&str]| names.iter().any(|f| f.eq_ignore_ascii_case(token.text()));
-            token.kind() == kinds::CONTROL && (named(SCANNER) || named(VALUES))
+            named(SCANNER) || named(VALUES)
         })
 }
 
