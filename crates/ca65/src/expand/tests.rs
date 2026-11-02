@@ -494,3 +494,59 @@ fn a_macros_line_knows_each_call_it_came_through() {
     let (expander, lines) = active_lines(" nop\n");
     assert!(expander.macro_frames(lines[0].span()).is_empty());
 }
+
+/// Each line `source` hands on: its text, and whether only its label is for
+/// the host.
+fn handed_on(source: &str) -> Vec<(String, bool)> {
+    let (_, lines) = active_lines(source);
+    lines
+        .iter()
+        .map(|line| {
+            let text = line.line().syntax().text().to_string();
+            (text.trim().to_owned(), line.label_only())
+        })
+        .collect()
+}
+
+#[test]
+fn a_labelled_line_hands_on_its_label_before_its_functions_run() {
+    // ca65 defines the label before it reads the rest of the line.
+    assert_eq!(
+        handed_on("l: .byte .sprintf(\"%d\", 1)\n"),
+        [
+            ("l: .byte .sprintf(\"%d\", 1)".to_owned(), true),
+            (".byte  \"1\"".to_owned(), false),
+        ]
+    );
+    assert_eq!(handed_on(": .byte .strlen(\"ab\")\n").len(), 2);
+    // A line with no function, or whose label a function makes, is whole.
+    assert_eq!(
+        handed_on("l: .byte 1\n"),
+        [("l: .byte 1".to_owned(), false)]
+    );
+    assert_eq!(handed_on(".ident(\"q\"): .byte 1\n").len(), 1);
+    // The rest is read without its label even when `.end` leaves no
+    // function to run, so the label is not handed on twice.
+    assert_eq!(
+        handed_on(".define NAME finish\nNAME:.end .sprintf(\"%d\",1)\n"),
+        [("finish :.end .sprintf(\"%d\",1)".to_owned(), true)]
+    );
+}
+
+#[test]
+fn each_ref_notes_the_functions_run_before_it() {
+    let (_, lines) = active_lines(".byte .ref(v), .sprintf(\"%d\", 1), .ref(v), .ref(w)\n");
+    let line = &lines[0];
+    let starts: Vec<_> = line
+        .line()
+        .syntax()
+        .descendants()
+        .filter_map(lang198x_syntax::SyntaxElement::into_token)
+        .filter(|t| t.text().eq_ignore_ascii_case(".ref"))
+        .map(|t| line.finished().at(t.text_range().start()))
+        .collect();
+    assert_eq!(starts, [Some(0), Some(1), Some(1)]);
+    // A line with no function has no table.
+    let (_, lines) = active_lines(".byte .ref(v)\n");
+    assert_eq!(lines[0].finished(), &Finished::default());
+}
