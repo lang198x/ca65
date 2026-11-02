@@ -53,7 +53,7 @@ fn lower(expr: &Expr, known: &dyn Known) -> Result<Ir, Diagnostic> {
     Ok(match expr {
         Expr::Literal(literal) => {
             let token = literal.token().ok_or_else(missing)?;
-            literal_value(&token)?
+            literal_value(&token, known)?
         }
         Expr::Name(name) => {
             let name = name.text();
@@ -268,7 +268,7 @@ fn size_of(call: &CallExpr, range: TextRange, known: &dyn Known) -> Result<Ir, D
 }
 
 /// A number, a character or `*`.
-fn literal_value(token: &SyntaxToken) -> Result<Ir, Diagnostic> {
+fn literal_value(token: &SyntaxToken, known: &dyn Known) -> Result<Ir, Diagnostic> {
     let text = token.text();
     let range = token.text_range();
     match token.kind() {
@@ -280,7 +280,8 @@ fn literal_value(token: &SyntaxToken) -> Result<Ir, Diagnostic> {
             let inner = inner.strip_suffix('\'').unwrap_or(inner);
             let mut bytes = inner.bytes();
             match (bytes.next(), bytes.next()) {
-                (Some(byte), None) => Ok(Ir::Num(i64::from(byte))),
+                // A character goes through the character map.
+                (Some(byte), None) => Ok(Ir::Num(i64::from(known.translate(byte)))),
                 _ => Err(invalid(range, "a character is one byte")),
             }
         }

@@ -29,6 +29,9 @@ struct Mini {
     org: bool,
     /// The names read so far.
     read: RefCell<HashSet<String>>,
+    /// The character map's changes, and the maps kept by `.pushcharmap`.
+    charmap: HashMap<u8, u8>,
+    kept: Vec<HashMap<u8, u8>>,
 }
 
 impl Mini {
@@ -69,6 +72,10 @@ impl Known for Mini {
     fn read(&self, name: &str) {
         self.read.borrow_mut().insert(name.to_owned());
     }
+
+    fn translate(&self, character: u8) -> u8 {
+        self.charmap.get(&character).copied().unwrap_or(character)
+    }
 }
 
 impl Host for Mini {
@@ -88,6 +95,10 @@ impl Host for Mini {
     fn is_constant(&mut self, expr: &Expr) -> bool {
         self.evaluate(expr).is_ok()
     }
+
+    fn translate(&mut self, character: u8) -> u8 {
+        Known::translate(self, character)
+    }
 }
 
 /// One pass over `source`, given the final values from the pass before:
@@ -102,6 +113,16 @@ fn pass(source: &str, finals: HashMap<String, i64>) -> Result<(Vec<u8>, Mini), S
     let mut bytes = Vec::new();
     while let Some(active) = expander.next_line(&mut mini) {
         let lowered = line(&active, profile, &mini).map_err(|d| d.message().to_owned())?;
+        match lowered.charmap {
+            Some(lower::Charmap::Set { index, value }) => {
+                mini.charmap.insert(index, value);
+            }
+            Some(lower::Charmap::Push) => mini.kept.push(mini.charmap.clone()),
+            Some(lower::Charmap::Pop) => {
+                mini.charmap = mini.kept.pop().ok_or("Charmap stack is empty")?;
+            }
+            _ => {}
+        }
         let before = bytes.len();
         let mut labels = Vec::new();
         for item in lowered.items {
@@ -1115,4 +1136,51 @@ fn a_line_knows_its_cpu_and_the_time() {
     };
     let values: Vec<_> = values.iter().map(|v| mini.value(v)).collect();
     assert_eq!(values, [Some(0x0032), Some(0)]);
+}
+
+/// The character map turns the characters of strings and character
+/// constants into other bytes, but not a `.literal` string, as ca65 V2.19
+/// does. `.strat`, `.if` and an instruction's operand see it too.
+#[test]
+fn the_character_map_translates_characters() {
+    let assembled = |source: &str| pass(source, HashMap::new()).map(|(bytes, _)| bytes);
+    assert_eq!(
+        assembled(
+            ".charmap $41, $05\n.byte \"AB\", 'A'\n lda #'A'\n.asciiz \"A\"\n\
+             .literal \"AB\", $41, 'A'\n.byte .strat(\"A\", 0)\n.word 'A'+1\n"
+        ),
+        Ok(vec![
+            5, 0x42, 5, 0xA9, 5, 5, 0, 0x41, 0x42, 0x41, 5, 5, 6, 0
+        ])
+    );
+    assert_eq!(
+        assembled(".charmap 'A', 'B'\n.if 'A' = 'B'\n.byte 1\n.endif\n"),
+        Ok(vec![1])
+    );
+    // A map kept and taken back.
+    assert_eq!(
+        assembled(
+            ".charmap $41, 1\n.pushcharmap\n.byte \"A\"\n.charmap $41, 2\n.byte \"A\"\n\
+             .popcharmap\n.byte \"A\"\n"
+        ),
+        Ok(vec![1, 2, 1])
+    );
+    // ca65's errors.
+    for (source, error) in [
+        (".charmap $41\n", "takes a character and its byte"),
+        (".charmap 1, 2, 3\n", "takes a character and its byte"),
+        (".charmap 256, 1\n", "Index must be in byte range"),
+        (
+            ".charmap 65, 256\n",
+            "Replacement character code must be in byte range",
+        ),
+        (
+            ".charmap later, 1\nlater = 2\n",
+            "Constant expression expected",
+        ),
+        (".pushcharmap 1\n", "expected the end of the line"),
+    ] {
+        let problem = assembled(source).expect_err(source);
+        assert!(problem.contains(error), "{source:?}: {problem}");
+    }
 }

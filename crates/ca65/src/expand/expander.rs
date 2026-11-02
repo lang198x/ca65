@@ -129,6 +129,13 @@ pub trait Host {
         None
     }
 
+    /// The byte ca65's character map makes of `character`, for `.strat`.
+    /// The assembler keeps the map; the default leaves every character as
+    /// it is.
+    fn translate(&mut self, character: u8) -> u8 {
+        character
+    }
+
     /// Told where the line the expander is about to act on is, before it
     /// asks anything about it, so an answer that finds a problem can say
     /// where. The default does nothing.
@@ -1790,5 +1797,9 @@ impl functions::Answers for Asked<'_> {
 
     fn is_mnemonic(&self, name: &str) -> bool {
         self.expander.mode.cpu().is_mnemonic(name)
+    }
+
+    fn translate(&mut self, character: u8) -> u8 {
+        self.host.translate(character)
     }
 }

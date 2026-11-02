@@ -21,7 +21,7 @@ pub use expr::expression;
 pub use instruction::{instruction, sets};
 pub use line::{Binary, Declared, Item, Lowered, Scope, Segment, Visibility, Visible, line};
 pub use record::{Record, RecordKind};
-pub use settings::CpuStack;
+pub use settings::{Charmap, CpuStack};
 
 /// The address sizes ca65 gives a value: how many bytes an address needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -134,6 +134,14 @@ pub trait Known {
     /// this from the line; the default is 8 bits each.
     fn widths(&self) -> crate::Widths {
         crate::Widths::default()
+    }
+
+    /// The byte ca65's character map makes of `character`, for the
+    /// characters of strings and character constants. The assembler keeps
+    /// the map, from each line's [`Charmap`] change. The default leaves
+    /// every character as it is.
+    fn translate(&self, character: u8) -> u8 {
+        character
     }
 
     /// The CPU in force on the line, which `.cpu` reports. Lowering a line

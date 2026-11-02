@@ -69,6 +69,9 @@ pub(super) trait Answers {
 
     /// Whether `name` is a mnemonic of the current CPU, in any case.
     fn is_mnemonic(&self, name: &str) -> bool;
+
+    /// The byte the character map makes of `character`, for `.strat`.
+    fn translate(&mut self, character: u8) -> u8;
 }
 
 /// Whether any of `pieces` calls a token function.
@@ -343,7 +346,9 @@ impl Stream<'_> {
                     .ok()
                     .and_then(|i| bytes.get(i))
                     .ok_or_else(|| call.problem("the index of `.strat` is outside the string"))?;
-                Ok(vec![number_piece(call, usize::from(*byte))])
+                // ca65 gives the byte through the character map.
+                let byte = self.answers.translate(*byte);
+                Ok(vec![number_piece(call, usize::from(byte))])
             }
             ".tcount" => {
                 let count = self.list(call)?.len();
