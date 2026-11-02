@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.25](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.24...lang198x-ca65-v0.0.25) - 2026-11-02
+
+### Fixed
+
+- hand on a line's label first only for a function before .end
+- read the rest of a labelled line without its label after .end
+- count a token function's uses from where it sits on the line
+
 ## [0.0.24](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.23...lang198x-ca65-v0.0.24) - 2026-11-02
 
 ### Added
