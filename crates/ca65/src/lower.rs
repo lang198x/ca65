@@ -156,6 +156,16 @@ pub trait Known {
         None
     }
 
+    /// The address size `name`, as written, was declared with, if it was,
+    /// such as by `.proc p: far`. `.addrsize` gives this before the size of
+    /// the name's value, since ca65 keeps the two apart: in the scope that
+    /// defines `p`, `lda p` is sized by its value, but `.addrsize(p)` is 3.
+    /// The default is `None`.
+    fn address_size(&self, name: &str) -> Option<Size> {
+        let _ = name;
+        None
+    }
+
     /// Told of each name lowering reads as a value, in the order ca65 reads
     /// them, which ca65 counts as a use. A name in `.defined`,
     /// `.referenced` or `.sizeof` is not read, but one in `.const` is. So
