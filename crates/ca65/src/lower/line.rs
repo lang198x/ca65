@@ -710,14 +710,10 @@ fn command_op(
         ".asciiz" => {
             let mut out = Vec::new();
             for value in at_least_one(values())? {
-                let bytes = string(&value, line).ok_or_else(|| {
+                let bytes = translated(&value, line, known).ok_or_else(|| {
                     invalid(value.syntax().text_range(), "`.asciiz` takes only strings")
                 })?;
-                out.extend(
-                    bytes
-                        .into_iter()
-                        .map(|b| Ir::Num(i64::from(known.translate(b)))),
-                );
+                out.extend(bytes.into_iter().map(|b| Ir::Num(i64::from(b))));
             }
             out.push(Ir::Num(0));
             sized(1, false, out)
@@ -893,15 +889,42 @@ fn bytes(
 ) -> Result<Vec<Ir>, Diagnostic> {
     let mut out = Vec::new();
     for value in values {
-        match string(&value, line) {
-            Some(bytes) => out.extend(bytes.into_iter().map(|b| {
-                let b = if translated { known.translate(b) } else { b };
-                Ir::Num(i64::from(b))
-            })),
+        let string = if translated {
+            self::translated(&value, line, known)
+        } else {
+            string(&value, line)
+        };
+        match string {
+            Some(bytes) => out.extend(bytes.into_iter().map(|b| Ir::Num(i64::from(b)))),
             None => out.push(expr::expression(&value, known)?),
         }
     }
     Ok(out)
+}
+
+/// The bytes a string literal makes in the program: each through the
+/// character map, but for those `.sprintf` wrote for a conversion, which
+/// ca65 leaves alone.
+fn translated(value: &Expr, line: &ActiveLine, known: &dyn Known) -> Option<Vec<u8>> {
+    let Expr::Literal(literal) = value else {
+        return None;
+    };
+    let token: SyntaxToken = literal.token()?;
+    let bytes = line.string(&token)?;
+    let raw = line.raw(&token).unwrap_or_default();
+    Some(
+        bytes
+            .into_iter()
+            .enumerate()
+            .map(|(i, b)| {
+                if raw.get(i).copied().unwrap_or(false) {
+                    b
+                } else {
+                    known.translate(b)
+                }
+            })
+            .collect(),
+    )
 }
 
 /// What a string literal holds, without its quotes. A string a token

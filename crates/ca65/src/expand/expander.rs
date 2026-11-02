@@ -241,8 +241,23 @@ impl ActiveLine {
             .strings
             .iter()
             .find(|(at, _)| *at == token.text_range())
-            .map(|(_, bytes)| bytes.clone());
+            .map(|(_, kept)| kept.bytes.clone());
         Some(kept.unwrap_or_else(|| defines::unquoted(token.text()).as_bytes().to_vec()))
+    }
+
+    /// Returns which of a string token's bytes are raw, or `None` if
+    /// `token` is not a string. A raw byte is one `.sprintf` wrote for a
+    /// conversion, such as `%s` or `%d`, which ca65's character map leaves
+    /// alone; a string written in the source has none.
+    #[must_use]
+    pub fn raw(&self, token: &SyntaxToken) -> Option<Vec<bool>> {
+        let bytes = self.string(token)?;
+        let kept = self
+            .strings
+            .iter()
+            .find(|(at, _)| *at == token.text_range())
+            .map(|(_, kept)| kept.raw.clone());
+        Some(kept.unwrap_or_else(|| vec![false; bytes.len()]))
     }
 }
 

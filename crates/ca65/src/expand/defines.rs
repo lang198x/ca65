@@ -35,8 +35,11 @@ pub(super) struct Piece {
     /// Where the piece's text lies, or what it was made from.
     pub(super) site: Span,
     /// A made string's bytes, when its text cannot hold them: one with a
-    /// byte above 127.
+    /// byte above 127, or one with raw characters.
     pub(super) bytes: Option<Vec<u8>>,
+    /// Which of a made string's bytes are raw: written by `.sprintf`, which
+    /// ca65's character map leaves alone.
+    pub(super) raw: Option<Vec<bool>>,
 }
 
 impl Piece {
@@ -47,6 +50,7 @@ impl Piece {
             origin,
             site,
             bytes: None,
+            raw: None,
         }
     }
 
@@ -56,6 +60,15 @@ impl Piece {
         match &self.bytes {
             Some(bytes) => bytes.clone(),
             None => unquoted(&self.text).as_bytes().to_vec(),
+        }
+    }
+
+    /// Which of a string piece's bytes are raw; none, unless a made string
+    /// says so.
+    pub(super) fn string_raw(&self) -> Vec<bool> {
+        match &self.raw {
+            Some(raw) => raw.clone(),
+            None => vec![false; self.string_bytes().len()],
         }
     }
 
@@ -327,6 +340,7 @@ impl Stream<'_> {
             },
             site,
             bytes: None,
+            raw: None,
         };
         let mut text = vec![gap.clone()];
         for (token, from) in &define.body {

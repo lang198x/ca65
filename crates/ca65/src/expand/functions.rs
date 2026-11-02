@@ -122,6 +122,7 @@ impl Call {
             },
             site: self.site,
             bytes: None,
+            raw: None,
         }
     }
 
@@ -186,8 +187,13 @@ impl Stream<'_> {
 
     /// A string argument's bytes.
     fn string(&mut self, call: &Call) -> Result<Vec<u8>, Problem> {
+        Ok(self.marked_string(call)?.0)
+    }
+
+    /// A string argument's bytes, and which of them are raw.
+    fn marked_string(&mut self, call: &Call) -> Result<(Vec<u8>, Vec<bool>), Problem> {
         let piece = self.expect(call, kinds::STRING, "a string")?;
-        Ok(piece.string_bytes())
+        Ok((piece.string_bytes(), piece.string_raw()))
     }
 
     /// The pieces of an expression, up to a `,` or `)` outside parentheses,
@@ -289,16 +295,21 @@ impl Stream<'_> {
     fn call(&mut self, call: &Call) -> Result<Vec<Piece>, Problem> {
         self.expect(call, kinds::L_PAREN, "`(`")?;
         match call.name.as_str() {
+            // Each byte keeps whether it is raw.
             ".concat" => {
-                let mut bytes = self.string(call)?;
+                let (mut bytes, mut raw) = self.marked_string(call)?;
                 loop {
                     match self.next_solid()? {
-                        Some(p) if p.kind == kinds::COMMA => bytes.extend(self.string(call)?),
+                        Some(p) if p.kind == kinds::COMMA => {
+                            let (more, more_raw) = self.marked_string(call)?;
+                            bytes.extend(more);
+                            raw.extend(more_raw);
+                        }
                         Some(p) if p.kind == kinds::R_PAREN => break,
                         _ => return Err(call.problem("expected `,` or `)` in `.concat`")),
                     }
                 }
-                Ok(vec![string_piece(call, bytes)])
+                Ok(vec![marked_piece(call, bytes, &raw)])
             }
             ".ident" => {
                 let name = self.string(call)?;
@@ -373,8 +384,8 @@ impl Stream<'_> {
                 Ok(vec![number_piece(call, usize::from(mnemonic))])
             }
             _ => {
-                let bytes = self.sprintf(call)?;
-                Ok(vec![string_piece(call, bytes)])
+                let (bytes, raw) = self.sprintf(call)?;
+                Ok(vec![marked_piece(call, bytes, &raw)])
             }
         }
     }
@@ -439,18 +450,25 @@ impl Stream<'_> {
 
     /// `.sprintf(format, args)`, after its `(`, up to and including its `)`:
     /// the bytes it makes.
-    fn sprintf(&mut self, call: &Call) -> Result<Vec<u8>, Problem> {
+    ///
+    /// Returns the bytes, and which of them are raw: ca65 marks what a
+    /// conversion writes, padding too, so the character map leaves it alone,
+    /// while the format's own characters go through it.
+    fn sprintf(&mut self, call: &Call) -> Result<(Vec<u8>, Vec<bool>), Problem> {
         let format = self.string(call)?;
         let mut out = Vec::new();
+        let mut raw = Vec::new();
         let mut bytes = format.into_iter().peekable();
         while let Some(b) = bytes.next() {
             if b != b'%' {
                 out.push(b);
+                raw.push(false);
                 continue;
             }
             if bytes.peek() == Some(&b'%') {
                 bytes.next();
                 out.push(b'%');
+                raw.push(false);
                 continue;
             }
             let mut spec = Spec::default();
@@ -497,10 +515,11 @@ impl Stream<'_> {
                     );
                 }
             };
+            raw.extend(std::iter::repeat_n(true, piece.len()));
             out.extend(piece);
         }
         self.expect(call, kinds::R_PAREN, "`)`")?;
-        Ok(out)
+        Ok((out, raw))
     }
 }
 
@@ -514,9 +533,17 @@ fn count(value: i64) -> usize {
 /// 127, which the text cannot hold, is shown as an escape such as `\xFF`,
 /// and the piece keeps the bytes themselves.
 fn string_piece(call: &Call, bytes: Vec<u8>) -> Piece {
+    marked_piece(call, bytes, &[])
+}
+
+/// A string token holding `bytes`, as [`string_piece`] makes one, with
+/// `raw` marking the bytes ca65's character map leaves alone. A string with
+/// a raw byte keeps its bytes too, since its text cannot say which are raw.
+fn marked_piece(call: &Call, bytes: Vec<u8>, raw: &[bool]) -> Piece {
     let mut piece = call.made(shown(&bytes), kinds::STRING);
-    if !bytes.is_ascii() {
-        piece.bytes = Some(bytes);
+    if let Some(kept) = super::made::Kept::of(&bytes, Some(raw).filter(|r| !r.is_empty())) {
+        piece.bytes = Some(kept.bytes);
+        piece.raw = Some(kept.raw);
     }
     piece
 }
