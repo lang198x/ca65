@@ -1,6 +1,6 @@
 # Plan: token functions in line order
 
-**Status:** Proposed 2026-11-02, for
+**Status:** Agreed 2026-11-02 as option 3, for
 [ca65#52](https://github.com/lang198x/ca65/issues/52).
 **Binding records:** Lang198x's
 [shared syntax layer decision](https://github.com/lang198x/lang198x/blob/main/decisions/shared-syntax-layer.md)
@@ -78,7 +78,7 @@ expander already asks `Host::is_referenced` for `.ifref`. It changes only
 lines that have both a token function and a `.ref` or a label, so nothing
 else can move.
 
-## Settled, if option 3 is agreed
+## Settled
 
 - **A `.ref` is answered when a function after it is about to run.** As the
   expander runs a line's functions, it answers a `.ref` or `.referenced`
