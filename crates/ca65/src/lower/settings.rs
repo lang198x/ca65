@@ -130,7 +130,6 @@ pub(super) fn setting(
         ".listbytes" => int_arg(command, &values, known, 4, 255)?,
         ".pagelen" | ".pagelength" => int_arg(command, &values, known, 32, 127)?,
         ".fileopt" | ".fopt" => file_option(command, &values, line, known)?,
-        ".dbg" => debug(command)?,
         _ => return Ok(None),
     }
     Ok(Some(None))
@@ -178,12 +177,50 @@ fn int_arg(
     Ok(())
 }
 
-/// Checks `.dbg`, the debug information a compiler writes. The forms
-/// written by hand are lowered: `.dbg line`, which ends the last line
-/// given, and `.dbg file, "name", size, time`, with the numbers written
-/// out. Lines, functions and symbols with arguments need ca65's file table
-/// and type checker, and are not lowered yet.
-fn debug(command: &Command) -> Result<(), Diagnostic> {
+/// What a `.dbg` line tells the assembler, which keeps ca65's file table and
+/// its scopes. A C compiler writes these; none makes a byte.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Dbg {
+    /// `.dbg file, "name", size, time` adds `name` to the file table.
+    File {
+        /// The file's name.
+        name: String,
+    },
+    /// `.dbg line, "name", line` says which line of `name` the code after
+    /// it came from. ca65 refuses a name not in its file table.
+    Line {
+        /// The file's name.
+        file: String,
+    },
+    /// `.dbg line` alone ends the last line given.
+    EndLine,
+    /// `.dbg func, "name", "type", class, "asm"` describes the `.proc`
+    /// it is in, which must be named `asm`, and may be described once.
+    Func {
+        /// The name of the `.proc` it describes.
+        asm_name: String,
+    },
+    /// `.dbg sym, "name", "type", class, ...` describes a variable. One
+    /// that is not `auto` names a symbol, which must be defined by the end
+    /// of the program, in the scope of the line or one around it.
+    Sym {
+        /// The symbol it names, if it is not `auto`.
+        asm_name: Option<String>,
+    },
+}
+
+/// Reads a `.dbg` line as ca65 V2.19's `dbginfo.c` does, with its errors.
+/// The numbers a compiler writes are read; an expression in their place is
+/// not lowered yet.
+pub(super) fn debug(command: &Command, line: &ActiveLine) -> Result<Option<Dbg>, Diagnostic> {
+    let word = command
+        .word()
+        .map(|w| w.text().to_ascii_lowercase())
+        .unwrap_or_default();
+    if word != ".dbg" {
+        return Ok(None);
+    }
     let range = command.syntax().text_range();
     let tokens: Vec<_> = command
         .tokens()
@@ -196,27 +233,162 @@ fn debug(command: &Command) -> Result<(), Diagnostic> {
         return Err(invalid(key.text_range(), "Expected an identifier"));
     }
     let key = key.text().to_ascii_lowercase();
-    let kinds: Vec<_> = rest.iter().map(|t| t.kind()).collect();
-    match key.as_str() {
-        "line" if rest.is_empty() => Ok(()),
-        "file"
-            if kinds
-                == [
-                    kinds::COMMA,
-                    kinds::STRING,
-                    kinds::COMMA,
-                    kinds::NUMBER,
-                    kinds::COMMA,
-                    kinds::NUMBER,
-                ] =>
-        {
-            Ok(())
+    let mut at = Tokens {
+        tokens: rest,
+        next: 0,
+        range,
+        line,
+    };
+    let dbg = match key.as_str() {
+        "line" if rest.is_empty() => Dbg::EndLine,
+        "file" => {
+            at.comma()?;
+            let name = at.string("String constant expected")?;
+            at.comma()?;
+            at.number()?;
+            at.comma()?;
+            at.number()?;
+            Dbg::File { name }
         }
-        "file" | "func" | "line" | "sym" => Err(unsupported(
-            range,
-            &format!("`.dbg {key}` with these arguments"),
-        )),
-        _ => Err(invalid(range, "Expected FILE, FUNC, LINE or SYM")),
+        "line" => {
+            at.comma()?;
+            let file = at.string("Expected a string constant")?;
+            at.comma()?;
+            if at.number()? < 0 {
+                return Err(invalid(range, "Line number is out of valid range"));
+            }
+            Dbg::Line { file }
+        }
+        "func" => {
+            at.comma()?;
+            at.string("String constant expected")?;
+            at.comma()?;
+            at.type_value()?;
+            at.comma()?;
+            at.class(&["extern", "static"])?;
+            at.comma()?;
+            let asm_name = at.string("Expected a string constant")?;
+            Dbg::Func { asm_name }
+        }
+        "sym" => {
+            at.comma()?;
+            at.string("Expected a string constant")?;
+            at.comma()?;
+            at.type_value()?;
+            at.comma()?;
+            let class = at.class(&["auto", "extern", "register", "static"])?;
+            at.comma()?;
+            if class == "auto" {
+                at.number()?;
+                Dbg::Sym { asm_name: None }
+            } else {
+                let asm_name = at.string("Expected a string constant")?;
+                if class == "register" {
+                    at.comma()?;
+                    at.number()?;
+                }
+                Dbg::Sym {
+                    asm_name: Some(asm_name),
+                }
+            }
+        }
+        _ => return Err(invalid(range, "Expected FILE, FUNC, LINE or SYM")),
+    };
+    at.end()?;
+    Ok(Some(dbg))
+}
+
+/// The tokens after `.dbg`'s keyword, read in order.
+struct Tokens<'a> {
+    tokens: &'a [lang198x_syntax::SyntaxToken],
+    next: usize,
+    range: lang198x_syntax::TextRange,
+    line: &'a ActiveLine,
+}
+
+impl Tokens<'_> {
+    fn peek(&self) -> Option<&lang198x_syntax::SyntaxToken> {
+        self.tokens.get(self.next)
+    }
+
+    /// Where a problem with the next token is: that token, or the line.
+    fn here(&self) -> lang198x_syntax::TextRange {
+        self.peek()
+            .map_or(self.range, lang198x_syntax::SyntaxToken::text_range)
+    }
+
+    fn comma(&mut self) -> Result<(), Diagnostic> {
+        match self.peek() {
+            Some(token) if token.kind() == kinds::COMMA => {
+                self.next += 1;
+                Ok(())
+            }
+            _ => Err(invalid(self.here(), "Expected `,`")),
+        }
+    }
+
+    fn string(&mut self, message: &str) -> Result<String, Diagnostic> {
+        let bytes = self
+            .peek()
+            .filter(|token| token.kind() == kinds::STRING)
+            .and_then(|token| self.line.string(token))
+            .ok_or_else(|| invalid(self.here(), message))?;
+        self.next += 1;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// A number, perhaps negative, as a compiler writes one.
+    fn number(&mut self) -> Result<i64, Diagnostic> {
+        let negative = self.peek().is_some_and(|t| t.kind() == kinds::MINUS);
+        if negative {
+            self.next += 1;
+        }
+        let value = self
+            .peek()
+            .filter(|token| token.kind() == kinds::NUMBER)
+            .and_then(|token| crate::number::value(token.text()))
+            .ok_or_else(|| unsupported(self.here(), "a `.dbg` value other than a number"))?;
+        self.next += 1;
+        // A number with more after it is an expression.
+        if self.peek().is_some_and(|t| t.kind() != kinds::COMMA) {
+            return Err(unsupported(
+                self.here(),
+                "a `.dbg` value other than a number",
+            ));
+        }
+        Ok(if negative { -value } else { value })
+    }
+
+    /// A type: a string of hex digits, two for each byte.
+    fn type_value(&mut self) -> Result<(), Diagnostic> {
+        let at = self.here();
+        let text = self.string("Expected a string constant")?;
+        if text.len() < 2 || text.len() % 2 != 0 {
+            return Err(invalid(at, "Type value has invalid length"));
+        }
+        if !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(invalid(at, "Type value contains invalid characters"));
+        }
+        Ok(())
+    }
+
+    /// A storage class, one of `classes`, in lower case.
+    fn class(&mut self, classes: &[&str]) -> Result<String, Diagnostic> {
+        let class = self
+            .peek()
+            .filter(|token| token.kind() == kinds::IDENT)
+            .map(|token| token.text().to_ascii_lowercase())
+            .filter(|class| classes.contains(&class.as_str()))
+            .ok_or_else(|| invalid(self.here(), "Storage class specifier expected"))?;
+        self.next += 1;
+        Ok(class)
+    }
+
+    fn end(&self) -> Result<(), Diagnostic> {
+        match self.peek() {
+            None => Ok(()),
+            Some(token) => Err(invalid(token.text_range(), "Expected the end of the line")),
+        }
     }
 }
 

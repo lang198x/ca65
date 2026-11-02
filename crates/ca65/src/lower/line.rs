@@ -5,7 +5,7 @@ use lang198x_syntax::{Diagnostic, SyntaxToken};
 
 use super::expr::{self, invalid, unsupported};
 use super::record::{self as records, Record};
-use super::settings::{Charmap, CpuStack, charmap, setting};
+use super::settings::{Charmap, CpuStack, Dbg, charmap, debug, setting};
 use super::{Known, Size, Value, instruction};
 use crate::Profile;
 use crate::ast::{Command, Expr, Statement, View};
@@ -48,6 +48,8 @@ pub struct Lowered {
     /// The change the line makes to ca65's character map, made after its
     /// statements.
     pub charmap: Option<Charmap>,
+    /// What a `.dbg` line tells the assembler.
+    pub dbg: Option<Dbg>,
     /// What the line does in a record, or the room a `.tag` makes.
     pub record: Option<Record>,
 }
@@ -208,6 +210,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
     let mut binary = None;
     let mut cpu = None;
     let mut charmap_change = None;
+    let mut dbg = None;
     let mut record = None;
     let mut defined = Vec::new();
     let op = if line.label_only() {
@@ -273,15 +276,21 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
                                         charmap_change = Some(change);
                                         None
                                     }
-                                    None => match records::record(
-                                        &Statement::Command(command.clone()),
-                                        known,
-                                    )? {
-                                        Some(change) => {
-                                            record = Some(change);
+                                    None => match debug(&command, line)? {
+                                        Some(told) => {
+                                            dbg = Some(told);
                                             None
                                         }
-                                        None => command_op(&command, line, known)?,
+                                        None => match records::record(
+                                            &Statement::Command(command.clone()),
+                                            known,
+                                        )? {
+                                            Some(change) => {
+                                                record = Some(change);
+                                                None
+                                            }
+                                            None => command_op(&command, line, known)?,
+                                        },
                                     },
                                 },
                             },
@@ -325,6 +334,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
         binary,
         cpu,
         charmap: charmap_change,
+        dbg,
         record,
     })
 }

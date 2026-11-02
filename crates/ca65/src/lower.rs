@@ -21,7 +21,7 @@ pub use expr::expression;
 pub use instruction::{instruction, sets};
 pub use line::{Binary, Declared, Item, Lowered, Scope, Segment, Visibility, Visible, line};
 pub use record::{Record, RecordKind};
-pub use settings::{Charmap, CpuStack};
+pub use settings::{Charmap, CpuStack, Dbg};
 
 /// The address sizes ca65 gives a value: how many bytes an address needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
