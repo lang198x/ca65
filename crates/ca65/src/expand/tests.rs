@@ -525,11 +525,22 @@ fn a_labelled_line_hands_on_its_label_before_its_functions_run() {
         [("l: .byte 1".to_owned(), false)]
     );
     assert_eq!(handed_on(".ident(\"q\"): .byte 1\n").len(), 1);
-    // The rest is read without its label even when `.end` leaves no
-    // function to run, so the label is not handed on twice.
+    // A function after `.end` never runs, so its line is not split.
     assert_eq!(
         handed_on(".define NAME finish\nNAME:.end .sprintf(\"%d\",1)\n"),
         [("finish :.end .sprintf(\"%d\",1)".to_owned(), true)]
+    );
+    // The rest is read without its label even when `.end` leaves no
+    // function to run, so the label is not handed on twice.
+    assert_eq!(
+        handed_on("l: .byte .strlen(\"a\") .end .sprintf(\"%d\",1)\n"),
+        [
+            (
+                "l: .byte .strlen(\"a\") .end .sprintf(\"%d\",1)".to_owned(),
+                true
+            ),
+            (".byte  1  .end".to_owned(), false),
+        ]
     );
 }
 
