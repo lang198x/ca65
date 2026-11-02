@@ -1498,7 +1498,9 @@ impl Expander {
                     *text != at.text() || problem.range().start() < at.range().start()
                 }));
         }
-        if !functions::any(&pieces) {
+        // A line without its label is made again even with no function
+        // left to run, such as one after `.end`.
+        if !functions::any(&pieces) && !unlabelled {
             return Some((line, problems, text));
         }
         let result = functions::run(

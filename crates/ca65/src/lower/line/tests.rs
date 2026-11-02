@@ -591,6 +591,12 @@ const MEASURED: &[(&str, Option<&str>)] = &[
     ),
     (": .byte .sprintf(\"%d\", 1)\n.word :-\n", Some("310000")),
     (".ident(\"q\"): .byte .defined(q)\n", Some("01")),
+    // The rest of a labelled line is read without its label, even when
+    // `.end` leaves no function to run.
+    (
+        ".define NAME finish\n.word finish\nNAME:.end .sprintf(\"%d\",4294967300)\n.byte 8\n",
+        Some("0200"),
+    ),
 ];
 
 #[test]
