@@ -1,6 +1,6 @@
 # Plan: token functions in line order
 
-**Status:** Agreed 2026-11-02 as option 3, for
+**Status:** Proposed again 2026-11-02, for
 [ca65#52](https://github.com/lang198x/ca65/issues/52).
 **Binding records:** Lang198x's
 [shared syntax layer decision](https://github.com/lang198x/lang198x/blob/main/decisions/shared-syntax-layer.md)
@@ -39,9 +39,16 @@ line:
 | `.byte .ref(V), .left(1, {V}), .ref(V)` | `00 02 01` | the same |
 | `.byte .ref(V), .strlen(.string(V)), .ref(V)` | `00 01 00` | the same |
 | `.byte .ref(U), .sprintf("%d", .defined(U)), .ref(U)` | `00 30 00` | the same |
+| `.byte .sprintf("%d", V), .ref(V), .ref(W), .sprintf("%d", W), .ref(W)`, with `W = 3` | `32 01 00 33 01` | `32 01 01 33 01` |
+| `.if .ref(V) + V + .strlen(.sprintf("%d", V)) = 3` | takes `.if` | takes `.else` |
+| `.byte V, .ref(V), .sprintf("%d", V)` | `02 01 32` | the same |
+| `.if V + .ref(V) + .strlen(.sprintf("%d", V)) = 4` | takes `.if` | the same |
 
 The rows that already agree show what must not change:
 
+- A plain read earlier on the line counts, as in `V, .ref(V)`. The host
+  already gets this right, because it collects a line's reads as lowering
+  reaches them.
 - Inside a function's arguments, a `.ref` before a read does not see it,
   because the host evaluates each argument as it comes.
 - A `.ref` inside a token list, such as `{.ref(V) ...}`, is only tokens.
@@ -50,8 +57,13 @@ The rows that already agree show what must not change:
 - A use that a function's result makes, such as the `V` that `.left`
   writes, counts when that result is read, not when the function runs.
 
-So only two things need to change: a `.ref` before a token function, and a
-line's label.
+So two things need to change:
+
+- **A read a function makes must count from where the function sits.** A
+  `.ref` sees the reads of the functions before it on the line, and not
+  those after it, as the row with `V` and `W` shows. This holds in a
+  condition too.
+- **A line's label must be defined before its functions run.**
 
 ## Options
 
@@ -60,39 +72,43 @@ line's label.
    does. This is the most faithful, but it turns the expander's contract
    with its host inside out. Every caller would change, and so would the
    tests that check a whole line at a time.
-2. **Tell the host where each read happened.** The expander would mark each
-   read with its place on the line, and the host would answer `.ref` by
-   comparing places. This keeps the expander as it is but adds a new part to
-   the host's contract. Each host would have to trace places across made
-   text to get it right, which is easy to get wrong.
-3. **Answer what is asked before each function, in the expander.** ca65
-   answers a `.ref` before any function after it runs. The expander can do
-   the same: as it runs a line's functions from left to right, it answers
-   each `.ref` that comes before a later function, by asking the host. It
-   then puts the answer, `0` or `1`, in the line in place of the call. A
-   labelled line is handed on as its label first, before its functions run,
-   as a labelled conditional already is.
+2. **Tell the host which functions came before each `.ref`.** The expander
+   counts the functions it has finished as it runs a line. It tells the host
+   that count each time it evaluates for a function, and it notes the count
+   at each `.ref` on the line. The host keeps a function's reads aside,
+   tagged with the count, until the line is lowered. A `.ref` then sees only
+   the reads tagged lower than its own count.
+3. **Answer each `.ref` before a function, in the expander.** This was the
+   first recommendation, and it is wrong. The expander would ask the host
+   about the name before a later function ran. But the host has not lowered
+   the line yet, so it has not seen a plain read earlier on the same line.
+   `.byte V, .ref(V), .sprintf("%d", V)` would give `00` for the `.ref`,
+   where ca65 gives `01`. The expander could look for the name earlier on
+   the line itself, but deciding what counts as a read is the host's job.
+   Doing it twice is how the two would drift apart.
 
-**Recommendation: option 3.** It needs no change to the `Host` trait: the
-expander already asks `Host::is_referenced` for `.ifref`. It changes only
-lines that have both a token function and a `.ref` or a label, so nothing
-else can move.
+**Recommendation: option 2.** It changes the contract, as #52 expected, but
+only by adding to it. Each new method has a default that keeps today's
+behaviour, so a host that does not care about `.ref` changes nothing.
 
-## Settled
+## Settled, if option 2 is agreed
 
-- **A `.ref` is answered when a function after it is about to run.** As the
-  expander runs a line's functions, it answers a `.ref` or `.referenced`
-  call only if it sits outside any token list and a scanner function
-  follows it on the line. That includes one inside a later token list, as
-  in `.tcount({.sprintf(...)})`. The answer is a number token, made
-  `Synthesised` from the call, like any other function's result. A `.ref`
-  after the last function is left to lowering, which already sees every
-  use the functions made.
-- **Only `.ref` and `.referenced` are answered early.** A token function can
-  change only which names have been used. `.defined`, `.const` and the
-  other functions about names give the same answer either side of a
-  function, so they stay with lowering. If a later measurement shows
-  otherwise, the function joins this list, with the measurement as a test.
+- **The expander counts finished functions.** As it runs a line's token
+  functions, the expander counts each one that finishes, including one
+  inside another's token list. The count starts at 0 on each line.
+- **A function's evaluations carry the count.** `Host` gains
+  `evaluate_in_function(expr, finished)`, whose default calls `evaluate`.
+  The expander calls it whenever a token function needs a value.
+- **Each `.ref` carries the count where it sits.** When the expander hands
+  on a `.ref` or `.referenced` outside any token list, it notes how many
+  functions had finished by then. `ActiveLine` gives that count for any
+  `.ref` on the line, and a condition gets the same table.
+- **Lowering asks with the count.** `Known` gains
+  `is_referenced_before(name, finished)`, whose default calls
+  `is_referenced`. Lowering a `.ref` that has a count asks this instead. A
+  `.ref` with no count, such as one in a line with no functions, asks
+  `is_referenced` as today. `Host` gains `evaluate_condition`, which takes
+  the condition's table, and whose default calls `evaluate`.
 - **A labelled line hands on its label first.** When a line has a label
   written before its first token function, and it runs a function, the
   expander first hands on the label alone, as a label-only `ActiveLine`. It
@@ -100,21 +116,24 @@ else can move.
   label. This is the path a labelled conditional already takes, so hosts
   already handle it. A label that a function makes, such as `.ident("x"):`,
   is not split off, because ca65 cannot define it before the function runs.
-- **The answers go through `Answers`.** The functions module asks the
-  expander through its `Answers` trait. The trait gains an `is_referenced`
-  question, which the expander answers from the host.
-- **No public change.** `Host`, `ActiveLine` and `Lowered` keep their shape,
-  so this is a patch release.
+- **Asm198x's walk keeps function reads aside.** It records the reads made
+  by `evaluate_in_function` with their count. It answers
+  `is_referenced_before(name, n)` from the reads before the line, the reads
+  lowering has made on the line so far, and the function reads counted
+  below `n`. Once a line is lowered or a condition decided, all of them
+  count, as they do today.
 
 ## Steps
 
-1. **Lang198x.** Answer an early `.ref` and split off the label, as above.
-   Add the measured lines in this plan to the expander's function tests,
-   including the rows that already agree. Then release.
-2. **Asm198x.** Take the release. Remove the `walk_gap` marks naming
-   ca65#52 from the data and conditional fixtures, and check that all 27
-   cases now match ca65. Add this plan's lines to
-   `ca65-measured-lines.json`, with their verdicts. Close ca65#52.
+1. **Lang198x.** Add the count, the two `Host` methods, the `Known` method,
+   the table on `ActiveLine`, and the label split. Add every line in this
+   plan to the tests, with a test host that keeps function reads aside, as
+   the walk will. Then release. All the additions have defaults, so the
+   release is compatible.
+2. **Asm198x.** Take the release, and keep function reads aside in the walk.
+   Remove the `walk_gap` marks naming ca65#52 from the data and conditional
+   fixtures, and check that all 27 cases now match ca65. Add this plan's
+   lines to `ca65-measured-lines.json`, with their verdicts. Close ca65#52.
 
 ## Risks
 
@@ -123,7 +142,10 @@ else can move.
   which is right. Its listing and sidecar give the label's line once,
   because both pieces come from the same source line. The Asm198x gates
   check this, including the listing and sidecar fixtures.
-- **An answered `.ref` no longer reaches lowering.** A host that counted a
-  name inside `.ref` as asked for would lose that. ca65 does not count it,
-  and the walk does not either, so this should change nothing. The `U` row
-  above checks the undefined case.
+- **A read kept aside must still be reported.** The walk reports a name used
+  but never defined from its reads. A read kept aside must reach that list
+  once the line is done, or an undefined name in a `.sprintf` argument
+  would go unreported. A measured line checks this.
+- **A count may be needed somewhere the plan has not looked.** If another
+  question about names turns out to depend on order, it takes a count in
+  the same way. A measured line comes first.
