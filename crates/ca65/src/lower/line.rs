@@ -9,7 +9,7 @@ use super::settings::{Charmap, CpuStack, Dbg, charmap, debug, setting};
 use super::{Known, Size, Value, instruction};
 use crate::Profile;
 use crate::ast::{Command, Expr, Statement, View};
-use crate::expand::ActiveLine;
+use crate::expand::{ActiveLine, Finished};
 use crate::kinds;
 
 /// A statement a line lowers to: a label, an operation, or both.
@@ -202,6 +202,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
         label,
         widths,
         cpu: line.cpu(),
+        finished: line.finished(),
     };
     let known: &dyn Known = &on_line;
     let mut scope = None;
@@ -339,6 +340,30 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
     })
 }
 
+/// Lowers `expr`, the condition of an `.if` or `.elseif`, as
+/// [`expression`](super::expression) does, with `finished` saying how many
+/// token functions on its line ran before each `.ref` in it. A host that
+/// keeps the uses token functions make aside lowers a condition with this,
+/// from [`Host::evaluate_condition`](crate::expand::Host::evaluate_condition).
+///
+/// # Errors
+///
+/// As for [`expression`](super::expression).
+pub fn condition(
+    expr: &crate::ast::Expr,
+    known: &dyn Known,
+    finished: &Finished,
+) -> Result<asm198x_ir::Expr, Diagnostic> {
+    let on_line = OnLine {
+        known,
+        label: None,
+        widths: known.widths(),
+        cpu: known.cpu(),
+        finished,
+    };
+    super::expression(expr, &on_line)
+}
+
 /// What is known on a line. ca65 defines a line's label before it reads the
 /// rest, so the line can use it: in `l: lda l` under `.org $10`, `l` is on
 /// the zero page.
@@ -347,6 +372,8 @@ struct OnLine<'a> {
     label: Option<String>,
     widths: crate::Widths,
     cpu: crate::Cpu,
+    /// How many token functions ran before each `.ref` on the line.
+    finished: &'a Finished,
 }
 
 impl OnLine<'_> {
@@ -378,6 +405,14 @@ impl Known for OnLine<'_> {
 
     fn is_referenced(&self, name: &str) -> bool {
         self.known.is_referenced(name)
+    }
+
+    fn is_referenced_before(&self, name: &str, finished: usize) -> bool {
+        self.known.is_referenced_before(name, finished)
+    }
+
+    fn finished_before(&self, at: lang198x_syntax::TextSize) -> Option<usize> {
+        self.finished.at(at)
     }
 
     fn read(&self, name: &str) {

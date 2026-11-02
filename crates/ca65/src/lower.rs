@@ -19,7 +19,9 @@ mod settings;
 
 pub use expr::expression;
 pub use instruction::{instruction, sets};
-pub use line::{Binary, Declared, Item, Lowered, Scope, Segment, Visibility, Visible, line};
+pub use line::{
+    Binary, Declared, Item, Lowered, Scope, Segment, Visibility, Visible, condition, line,
+};
 pub use record::{Record, RecordKind};
 pub use settings::{Charmap, CpuStack, Dbg};
 
@@ -118,6 +120,28 @@ pub trait Known {
     fn is_referenced(&self, name: &str) -> bool {
         let _ = name;
         false
+    }
+
+    /// Whether `name`, as written, had been used by the time `finished`
+    /// token functions on the line had run, for a `.referenced` that ca65
+    /// reads after them. A use a later function makes does not count. Only
+    /// an assembler that keeps the uses functions make aside, as
+    /// [`Host::evaluate_in_function`](crate::expand::Host::evaluate_in_function)
+    /// allows, can tell them apart. The default is
+    /// [`is_referenced`](Self::is_referenced).
+    fn is_referenced_before(&self, name: &str, finished: usize) -> bool {
+        let _ = finished;
+        self.is_referenced(name)
+    }
+
+    /// How many token functions had run before the `.referenced` that
+    /// starts at `at` in the line's text, if lowering knows. Lowering
+    /// answers this itself, from the line's
+    /// [`Finished`](crate::expand::Finished) table, so an assembler leaves
+    /// the default, which is `None`.
+    fn finished_before(&self, at: lang198x_syntax::TextSize) -> Option<usize> {
+        let _ = at;
+        None
     }
 
     /// Told of each name lowering reads as a value, in the order ca65 reads

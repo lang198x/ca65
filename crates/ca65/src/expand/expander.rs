@@ -104,6 +104,38 @@ pub trait Host {
     /// the expression and takes the condition as false.
     fn evaluate(&mut self, expr: &Expr) -> Result<i64, String>;
 
+    /// Evaluates `expr`, a value a token function such as `.sprintf` needs,
+    /// when `finished` token functions on the line have already run.
+    ///
+    /// ca65 runs each token function when it reaches it on the line, so a
+    /// name the function reads counts as used from there on. A host that
+    /// answers `.ref` can keep these uses aside, with `finished`, and count
+    /// each one only for a `.ref` after it: see
+    /// [`Known::is_referenced_before`](crate::lower::Known::is_referenced_before).
+    /// The default calls [`evaluate`](Self::evaluate).
+    ///
+    /// # Errors
+    ///
+    /// As for [`evaluate`](Self::evaluate).
+    fn evaluate_in_function(&mut self, expr: &Expr, finished: usize) -> Result<i64, String> {
+        let _ = finished;
+        self.evaluate(expr)
+    }
+
+    /// Evaluates `expr`, the condition of an `.if` or `.elseif`, with the
+    /// table of how many token functions had run before each `.ref` in it.
+    /// A host that keeps function uses aside lowers the condition with
+    /// [`crate::lower::condition`]. The default calls
+    /// [`evaluate`](Self::evaluate).
+    ///
+    /// # Errors
+    ///
+    /// As for [`evaluate`](Self::evaluate).
+    fn evaluate_condition(&mut self, expr: &Expr, finished: &Finished) -> Result<i64, String> {
+        let _ = finished;
+        self.evaluate(expr)
+    }
+
     /// Whether `name` is defined, for `.ifdef` and `.ifndef`.
     fn is_defined(&mut self, name: &NameRef) -> bool;
 
@@ -173,6 +205,30 @@ impl IncludedFile {
     }
 }
 
+/// For each `.ref` or `.referenced` on a line whose token functions ran,
+/// how many of those functions had finished before it.
+///
+/// ca65 runs a token function such as `.sprintf` when it reaches it, so a
+/// `.ref` before the function does not see a name the function reads, and
+/// a `.ref` after it does. Lowering reads this table to ask
+/// [`Known::is_referenced_before`](crate::lower::Known::is_referenced_before).
+/// A line with no token functions has an empty table.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Finished(Vec<(TextSize, usize)>);
+
+impl Finished {
+    /// How many token functions had finished before the `.ref` or
+    /// `.referenced` that starts at `at` in the line's text, or `None` if
+    /// none starts there.
+    #[must_use]
+    pub fn at(&self, at: TextSize) -> Option<usize> {
+        self.0
+            .iter()
+            .find(|(start, _)| *start == at)
+            .map(|(_, finished)| *finished)
+    }
+}
+
 /// A line for the host to assemble.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveLine {
@@ -185,6 +241,8 @@ pub struct ActiveLine {
     cpu: Cpu,
     /// The 65816's register widths where the line was read.
     widths: Widths,
+    /// How many token functions had run before each `.ref` on the line.
+    finished: Finished,
 }
 
 impl ActiveLine {
@@ -221,8 +279,16 @@ impl ActiveLine {
         self.widths
     }
 
+    /// Returns how many of the line's token functions had run before each
+    /// `.ref` or `.referenced` on it.
+    #[must_use]
+    pub fn finished(&self) -> &Finished {
+        &self.finished
+    }
+
     /// Returns whether only the line's labels are for the host: the rest is
-    /// a macro call that the expander runs next.
+    /// a macro call, a conditional or a line with token functions, which
+    /// the expander runs next.
     #[must_use]
     pub fn label_only(&self) -> bool {
         self.label_only
@@ -294,6 +360,7 @@ fn labelled(line: Line, text: TextId) -> Option<ActiveLine> {
         strings: Vec::new(),
         cpu: Cpu::Mos6502,
         widths: Widths::default(),
+        finished: Finished::default(),
     })
 }
 
@@ -401,6 +468,13 @@ pub struct Expander {
     carry: Option<(Line, TextId)>,
     /// The bytes of each made string whose text cannot hold them.
     strings: Strings,
+    /// How many token functions had run before each `.ref` on the line
+    /// being run.
+    ran: Finished,
+    /// A line whose label the host has been given on its own, so that the
+    /// label is defined before the line's token functions run. The rest of
+    /// the line runs when the host asks for the next line.
+    rest: Option<(Line, Vec<Diagnostic>, TextId)>,
 }
 
 /// The commands that open, turn or close a conditional.
@@ -482,6 +556,8 @@ impl Expander {
             diagnostics: Vec::new(),
             carry: None,
             strings: Strings::default(),
+            ran: Finished::default(),
+            rest: None,
         };
         let source = expander.load(TextId::File(FileId::new(0)), text, None, None, true)?;
         expander.sources.push(source);
@@ -496,6 +572,16 @@ impl Expander {
             self.conditional(&command, &word, text, host);
         }
         while !self.ended {
+            self.ran = Finished::default();
+            // The rest of a line whose label the host has had. Its problems
+            // start where they did when the line was read.
+            if let Some((line, problems, text)) = self.rest.take() {
+                let ran = self.run_functions(line, problems, text, host, true);
+                if let Some(active) = ran.and_then(|ran| self.hand_on(ran, host)) {
+                    return Some(active);
+                }
+                continue;
+            }
             self.line_start = self.diagnostics.len();
             let Some((line, problems, text)) = self.read() else {
                 break;
@@ -527,37 +613,59 @@ impl Expander {
                 Some(Statement::Command(command))
                     if command.word().is_some_and(|w| w.text().eq_ignore_ascii_case(".elseif"))
             );
+            // ca65 defines a line's label before it reads the rest of the
+            // line, so a token function there can ask about the label. The
+            // host has the label first, and the rest when it asks again.
+            if !elseif
+                && functions::calls(&line)
+                && macros::command_word(&line).as_deref() != Some(".define")
+                && let Some(mut label) = labelled(line.clone(), text)
+            {
+                label.cpu = self.mode.cpu();
+                label.widths = self.widths;
+                self.rest = Some((line, problems, text));
+                return Some(label);
+            }
             let ran = if elseif {
                 Some((line, Vec::new(), text))
             } else {
-                self.run_functions(line, problems, text, host)
+                self.run_functions(line, problems, text, host, false)
             };
-            let Some((line, problems, text)) = ran else {
-                continue;
-            };
-            let (line, problems, text) = self.resolve(line, problems, text);
-            for problem in problems {
-                self.diagnostics.push((text, problem));
-            }
-            if let Some(mut active) = self.run(line, text, host) {
-                active.cpu = self.mode.cpu();
-                active.widths = self.widths;
-                if !active.label_only {
-                    self.track_block(&active.line);
-                    self.follow_widths(&active.line, host);
-                }
-                let range = active.line.syntax().text_range();
-                active.strings = self
-                    .strings
-                    .in_text(text)
-                    .into_iter()
-                    .filter(|(at, _)| range.contains_range(*at))
-                    .collect();
+            if let Some(active) = ran.and_then(|ran| self.hand_on(ran, host)) {
                 return Some(active);
             }
         }
         self.finish();
         None
+    }
+
+    /// Runs a line whose token functions have run, handing it on to the
+    /// host if it is the host's.
+    fn hand_on(
+        &mut self,
+        (line, problems, text): (Line, Vec<Diagnostic>, TextId),
+        host: &mut dyn Host,
+    ) -> Option<ActiveLine> {
+        let (line, problems, text) = self.resolve(line, problems, text);
+        for problem in problems {
+            self.diagnostics.push((text, problem));
+        }
+        let mut active = self.run(line, text, host)?;
+        active.cpu = self.mode.cpu();
+        active.widths = self.widths;
+        active.finished = self.ran.clone();
+        if !active.label_only {
+            self.track_block(&active.line);
+            self.follow_widths(&active.line, host);
+        }
+        let range = active.line.syntax().text_range();
+        active.strings = self
+            .strings
+            .in_text(text)
+            .into_iter()
+            .filter(|(at, _)| range.contains_range(*at))
+            .collect();
+        Some(active)
     }
 
     /// Follows the 65816's register widths, which `line` may change for
@@ -1105,6 +1213,7 @@ impl Expander {
                             strings: Vec::new(),
                             cpu: Cpu::Mos6502,
                             widths: Widths::default(),
+                            finished: Finished::default(),
                         });
                     }
                     Some(word) if repeats::is_end(word) => {
@@ -1127,6 +1236,7 @@ impl Expander {
                         strings: Vec::new(),
                         cpu: Cpu::Mos6502,
                         widths: Widths::default(),
+                        finished: Finished::default(),
                     });
                 }
             }
@@ -1139,6 +1249,7 @@ impl Expander {
             strings: Vec::new(),
             cpu: Cpu::Mos6502,
             widths: Widths::default(),
+            finished: Finished::default(),
         })
     }
 
@@ -1339,21 +1450,31 @@ impl Expander {
 
     /// `line`, with its token functions run and the result parsed again, or
     /// `None` if a call is broken, which is reported. A `.define`'s body is
-    /// kept as written, as ca65 reads it in raw mode.
+    /// kept as written, as ca65 reads it in raw mode. With `unlabelled`, the
+    /// line's label is left out, since the host has had it. Notes how many
+    /// functions ran before each `.ref`, for the line and its condition.
     fn run_functions(
         &mut self,
         line: Line,
         problems: Vec<Diagnostic>,
         text: TextId,
         host: &mut dyn Host,
+        unlabelled: bool,
     ) -> Option<(Line, Vec<Diagnostic>, TextId)> {
+        self.ran = Finished::default();
         if macros::command_word(&line).as_deref() == Some(".define") {
             return Some((line, problems, text));
         }
+        let label_end = line
+            .label()
+            .map(|label| label.syntax().text_range().end())
+            .or_else(|| line.unnamed_label().map(|l| l.syntax().text_range().end()))
+            .filter(|_| unlabelled);
         let mut pieces: Vec<Piece> = line
             .syntax()
             .descendants()
             .filter_map(SyntaxElement::into_token)
+            .filter(|t| label_end.is_none_or(|end| t.text_range().start() >= end))
             .map(|t| {
                 let from = Span::new(text, t.text_range());
                 self.strings.piece(&t, self.copied(from), from)
@@ -1387,17 +1508,28 @@ impl Expander {
                 host,
             },
         );
-        let pieces = match result {
-            Ok(pieces) => pieces,
+        let ran = match result {
+            Ok(ran) => ran,
             Err(problem) => {
                 self.report_kind(problem.kind, problem.site, &problem.message);
                 return None;
             }
         };
         let mut builder = Made::new();
-        for piece in &pieces {
+        let mut starts = Vec::with_capacity(ran.pieces.len());
+        let mut at = 0_u32;
+        for piece in &ran.pieces {
+            starts.push(TextSize::from(at));
+            let len = TextSize::of(piece.text.as_str()).unwrap_or(TextSize::ZERO);
+            at = at.saturating_add(u32::from(len));
             builder.piece(piece);
         }
+        self.ran = Finished(
+            ran.refs
+                .iter()
+                .filter_map(|&(index, finished)| Some((*starts.get(index)?, finished)))
+                .collect(),
+        );
         let Some((id, source)) = self.add_text(builder, None) else {
             self.report(
                 text,
@@ -1412,11 +1544,13 @@ impl Expander {
     }
 
     /// The value of the constant expression made of `pieces`, for a token
-    /// function called at `site`, asked of the host.
+    /// function called at `site` when `finished` functions had run, asked
+    /// of the host.
     fn constant(
         &mut self,
         pieces: &[Piece],
         site: Span,
+        finished: usize,
         host: &mut dyn Host,
     ) -> Result<i64, Problem> {
         let made = Origin::Synthesised {
@@ -1440,7 +1574,7 @@ impl Expander {
         };
         match values.as_slice() {
             [value] => host
-                .evaluate(value)
+                .evaluate_in_function(value, finished)
                 .map_err(|message| Problem::invalid(site, message)),
             _ => Err(expected()),
         }
@@ -1681,7 +1815,7 @@ impl Expander {
     /// Evaluates a condition, reporting the host's problem at the
     /// expression and taking the condition as false.
     fn evaluate(&mut self, expr: &Expr, text: TextId, host: &mut dyn Host) -> bool {
-        match host.evaluate(expr) {
+        match host.evaluate_condition(expr, &self.ran) {
             Ok(value) => value != 0,
             Err(message) => {
                 self.report(text, expr.syntax().text_range(), &message);
@@ -1694,7 +1828,8 @@ impl Expander {
     /// functions run first. A broken call is reported and the condition is
     /// false.
     fn elseif(&mut self, line: &Line, text: TextId, host: &mut dyn Host) -> bool {
-        let Some((ran, _, ran_text)) = self.run_functions(line.clone(), Vec::new(), text, host)
+        let Some((ran, _, ran_text)) =
+            self.run_functions(line.clone(), Vec::new(), text, host, false)
         else {
             return false;
         };
@@ -1832,8 +1967,8 @@ struct Asked<'a> {
 }
 
 impl functions::Answers for Asked<'_> {
-    fn value(&mut self, pieces: &[Piece], site: Span) -> Result<i64, Problem> {
-        self.expander.constant(pieces, site, self.host)
+    fn value(&mut self, pieces: &[Piece], site: Span, finished: usize) -> Result<i64, Problem> {
+        self.expander.constant(pieces, site, finished, self.host)
     }
 
     fn is_macro(&self, name: &str) -> bool {

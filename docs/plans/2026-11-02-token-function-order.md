@@ -1,6 +1,6 @@
 # Plan: token functions in line order
 
-**Status:** Agreed 2026-11-02 as option 2, for
+**Status:** Agreed 2026-11-02 as option 2; step 1 built the same day, for
 [ca65#52](https://github.com/lang198x/ca65/issues/52).
 **Binding records:** Lang198x's
 [shared syntax layer decision](https://github.com/lang198x/lang198x/blob/main/decisions/shared-syntax-layer.md)
@@ -122,6 +122,12 @@ behaviour, so a host that does not care about `.ref` changes nothing.
   lowering has made on the line so far, and the function reads counted
   below `n`. Once a line is lowered or a condition decided, all of them
   count, as they do today.
+
+- **As built.** The table is `expand::Finished`, which `ActiveLine::finished`
+  gives. Lowering finds a `.ref`'s count through `Known::finished_before`,
+  which lowering answers from the table itself, so a host implements only
+  `is_referenced_before`. A host lowers a condition with
+  `lower::condition`, which takes the table.
 
 ## Steps
 

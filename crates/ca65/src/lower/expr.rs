@@ -136,9 +136,16 @@ fn function(call: &CallExpr, range: TextRange, known: &dyn Known) -> Result<Ir, 
             let name = named(call, range, "`.defined`")?;
             return Ok(Ir::Num(i64::from(known.is_defined(&name))));
         }
+        // ca65 answers this where it reads it, so a use that a token
+        // function after it on the line makes does not count.
         ".referenced" | ".ref" => {
             let name = named(call, range, "`.referenced`")?;
-            return Ok(Ir::Num(i64::from(known.is_referenced(&name))));
+            let at = call.function().map(|t| t.text_range().start());
+            let used = match at.and_then(|at| known.finished_before(at)) {
+                Some(finished) => known.is_referenced_before(&name, finished),
+                None => known.is_referenced(&name),
+            };
+            return Ok(Ir::Num(i64::from(used)));
         }
         // `.addrsize(name)`: the address size of a name defined above, as
         // ca65 numbers them: 1 for the zero page, 2 for absolute, 3 for far.
