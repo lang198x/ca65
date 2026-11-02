@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.27](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.26...lang198x-ca65-v0.0.27) - 2026-11-02
+
+### Added
+
+- lower a .proc's address size as the size of its name
+
 ## [0.0.26](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.25...lang198x-ca65-v0.0.26) - 2026-11-02
 
 ### Added
