@@ -519,8 +519,20 @@ impl Expander {
                 self.skip(&line, problems, text, host);
                 continue;
             }
-            let Some((line, problems, text)) = self.run_functions(line, problems, text, host)
-            else {
+            // While lines run, a `.elseif` ends a taken branch and ca65
+            // never reads its condition: its token functions do not run and
+            // its syntax does not count.
+            let elseif = matches!(
+                line.statement(),
+                Some(Statement::Command(command))
+                    if command.word().is_some_and(|w| w.text().eq_ignore_ascii_case(".elseif"))
+            );
+            let ran = if elseif {
+                Some((line, Vec::new(), text))
+            } else {
+                self.run_functions(line, problems, text, host)
+            };
+            let Some((line, problems, text)) = ran else {
                 continue;
             };
             let (line, problems, text) = self.resolve(line, problems, text);
@@ -1678,6 +1690,22 @@ impl Expander {
         }
     }
 
+    /// The condition of a `.elseif` that leads `line`, with the line's token
+    /// functions run first. A broken call is reported and the condition is
+    /// false.
+    fn elseif(&mut self, line: &Line, text: TextId, host: &mut dyn Host) -> bool {
+        let Some((ran, _, ran_text)) = self.run_functions(line.clone(), Vec::new(), text, host)
+        else {
+            return false;
+        };
+        match ran.statement() {
+            Some(Statement::Command(command)) => {
+                self.condition(&command, ".elseif", ran_text, host)
+            }
+            _ => false,
+        }
+    }
+
     /// A line while lines do not run: only its conditional commands count,
     /// wherever they are.
     fn skip(&mut self, line: &Line, problems: Vec<Diagnostic>, text: TextId, host: &mut dyn Host) {
@@ -1711,7 +1739,9 @@ impl Expander {
                     if result.is_ok() {
                         let cond = self.conditionals.active()
                             && match statement.as_ref().filter(|_| leads) {
-                                Some(command) => self.condition(command, &word, text, host),
+                                // The condition runs its token functions
+                                // first, as a taken `.if`'s does.
+                                Some(_) => self.elseif(line, text, host),
                                 None => {
                                     self.report_kind(
                                         DiagnosticKind::Unsupported,

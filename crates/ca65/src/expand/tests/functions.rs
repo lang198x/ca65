@@ -73,6 +73,26 @@ const MEASURED: &[(&str, Want)] = &[
     ),
     // Not in a skipped branch.
     (".if 0\n.byte .left(\n.endif\n", Bytes(&[])),
+    // A `.elseif` runs its token functions before its condition.
+    (
+        ".if 0\n.byte 1\n.elseif .match(.left(1, {a b}), a)\n.byte 2\n.endif\n",
+        Bytes(&[2]),
+    ),
+    (
+        ".if 0\n.byte 1\n.elseif .left(1, {0 1})\n.byte 2\n.else\n.byte 3\n.endif\n",
+        Bytes(&[3]),
+    ),
+    // One after a branch that was taken is not run, and its syntax does
+    // not count.
+    (
+        ".if 1\n.byte 1\n.elseif .left(\n.byte 2\n.endif\n",
+        Bytes(&[1]),
+    ),
+    (
+        ".if 1\n.byte 1\n.elseif 1 2 3\n.byte 2\n.endif\n",
+        Bytes(&[1]),
+    ),
+    (".if 1\n.byte 1\n.elseif\n.byte 2\n.endif\n", Bytes(&[1])),
     (".byte .concat()\n", Refused("expected a string")),
     (".byte .concat(\"a\", 1)\n", Refused("expected a string")),
     (".byte .ident()\n", Refused("expected a string")),
