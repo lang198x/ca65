@@ -238,7 +238,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
                     Operation::Equ(value)
                 })
             }
-            Some(Statement::Command(command)) => match scope_change(&command)? {
+            Some(Statement::Command(command)) => match scope_change(&command, line.cpu())? {
                 Some(change) => {
                     if let Scope::Open {
                         name: Some(name),
@@ -649,7 +649,12 @@ fn constructor(command: &Command, word: &str, known: &dyn Known) -> Result<Visib
 /// The change to the scopes a command makes, if it is `.scope`, `.proc`,
 /// `.endscope` or `.endproc`. The parser refuses a label before `.scope` or
 /// `.proc`, as ca65 does.
-fn scope_change(command: &Command) -> Result<Option<Scope>, Diagnostic> {
+///
+/// An address size after the name, as in a C compiler's `.proc _main: near`,
+/// is checked as ca65 V2.19 checks it on `cpu`. An absolute one is what a
+/// label has anyway; a zero-page one, or `far` on the 65816, changes how
+/// the label is sized, and is not lowered yet.
+fn scope_change(command: &Command, cpu: crate::Cpu) -> Result<Option<Scope>, Diagnostic> {
     let range = command.syntax().text_range();
     let word = command
         .word()
@@ -658,8 +663,32 @@ fn scope_change(command: &Command) -> Result<Option<Scope>, Diagnostic> {
     let procedure = word == ".proc" || word == ".endproc";
     match word.as_str() {
         ".scope" | ".proc" => {
-            if command.address_size().is_some() {
-                return Err(unsupported(range, &format!("an address size on `{word}`")));
+            if let Some(size) = command.address_size() {
+                let text = size.text().to_ascii_lowercase();
+                match text.as_str() {
+                    "near" | "abs" | "absolute" => {}
+                    "far" if cpu == crate::Cpu::Wdc65816 => {
+                        return Err(unsupported(range, &format!("a far `{word}`")));
+                    }
+                    "far" | "long" | "dword" => {
+                        return Err(invalid(
+                            size.text_range(),
+                            "Invalid address size specification for current CPU",
+                        ));
+                    }
+                    "zp" | "direct" | "zeropage" => {
+                        return Err(unsupported(range, &format!("a zero-page `{word}`")));
+                    }
+                    _ => {
+                        return Err(invalid(
+                            size.text_range(),
+                            &format!(
+                                "Expected an address size specifier but found `{}`",
+                                size.text()
+                            ),
+                        ));
+                    }
+                }
             }
             let name = command.name().map(|name| name.text());
             Ok(Some(Scope::Open {

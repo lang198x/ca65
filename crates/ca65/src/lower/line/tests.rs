@@ -766,7 +766,7 @@ fn what_is_not_lowered_yet_says_so() {
     for source in [
         ".byte .bank(1)\n",
         ".segment \"X\": dword\n",
-        ".proc p: far\n",
+        ".proc p: zp\n",
     ] {
         let mut expander = Expander::new(source, profile).expect("parses");
         let mut mini = Mini::default();
@@ -1290,4 +1290,39 @@ fn debug_information_is_reported() {
         let problem = dbg(source).expect_err(source);
         assert!(problem.contains(error), "{source:?}: {problem}");
     }
+}
+
+/// An address size on `.proc` or `.scope`, which a C compiler writes on
+/// every function, is checked as ca65 V2.19 checks it.
+#[test]
+fn a_procedure_may_name_an_absolute_size() {
+    let opened = |source: &str| {
+        first(source)
+            .map(|l| l.scope.is_some())
+            .map_err(|d| d.kind())
+    };
+    for size in ["near", "abs", "absolute", "NEAR"] {
+        assert_eq!(
+            opened(&format!(".proc _main: {size}\n")),
+            Ok(true),
+            "{size}"
+        );
+        assert_eq!(opened(&format!(".scope s: {size}\n")), Ok(true), "{size}");
+    }
+    for (size, kind) in [
+        ("far", DiagnosticKind::Invalid),
+        ("long", DiagnosticKind::Invalid),
+        ("dword", DiagnosticKind::Invalid),
+        ("dp", DiagnosticKind::Invalid),
+        ("zeropage", DiagnosticKind::Unsupported),
+    ] {
+        assert_eq!(opened(&format!(".proc p: {size}\n")), Err(kind), "{size}");
+    }
+    // The 65816 has far addresses.
+    let profile = Profile::CA65_2_19_6502.with_cpu(crate::Cpu::Wdc65816);
+    let mut expander = Expander::new(".proc p: far\n", profile).expect("parses");
+    let mut mini = Mini::default();
+    let active = expander.next_line(&mut mini).expect("a line");
+    let problem = line(&active, profile, &mini).err().map(|d| d.kind());
+    assert_eq!(problem, Some(DiagnosticKind::Unsupported));
 }
