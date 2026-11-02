@@ -29,6 +29,7 @@ pub mod kinds;
 mod lexer;
 #[cfg(feature = "ir")]
 pub mod lower;
+pub mod macpack;
 #[cfg(test)]
 mod measured;
 mod number;

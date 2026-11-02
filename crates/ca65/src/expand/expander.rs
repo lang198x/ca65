@@ -123,10 +123,10 @@ pub trait Host {
 
     /// The text of the macro package `.macpack` names, such as `generic`,
     /// or `None` if there is no such package. ca65 V2.19 reads `name.mac`
-    /// from its include path. The default has no packages.
+    /// from its include path; the default gives this crate's own packages,
+    /// from [`crate::macpack::package`].
     fn package(&mut self, name: &str) -> Option<String> {
-        let _ = name;
-        None
+        crate::macpack::package(name)
     }
 
     /// The byte ca65's character map makes of `character`, for `.strat`.
