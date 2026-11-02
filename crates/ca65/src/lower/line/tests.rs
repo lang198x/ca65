@@ -607,6 +607,7 @@ fn segment_commands_are_reported() {
         (".data", "DATA"),
         (".bss", "BSS"),
         (".zeropage", "ZEROPAGE"),
+        (".null", "NULL"),
     ] {
         assert_eq!(segment(&format!("{word}\n")), used(name, None), "{word}");
     }

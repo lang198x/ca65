@@ -411,6 +411,8 @@ fn segment_change(command: &Command) -> Result<Option<Segment>, Diagnostic> {
         ".data" => named("DATA"),
         ".bss" => named("BSS"),
         ".zeropage" => named("ZEROPAGE"),
+        // ca65's segment for what takes no room, such as a scope's symbols.
+        ".null" => named("NULL"),
         ".pushseg" => Some(Segment::Push),
         ".popseg" => Some(Segment::Pop),
         ".segment" => {
