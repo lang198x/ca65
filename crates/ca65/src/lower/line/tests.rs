@@ -1326,3 +1326,15 @@ fn a_procedure_may_name_an_absolute_size() {
     let problem = line(&active, profile, &mini).err().map(|d| d.kind());
     assert_eq!(problem, Some(DiagnosticKind::Unsupported));
 }
+
+/// `.case on`, which a C compiler writes, is what ca65 does anyway.
+#[test]
+fn names_keep_their_case() {
+    for source in [".case on\n", ".case +\n", ".case\n", ".CASE ON\n"] {
+        assert!(first(source).is_ok(), "{source}");
+    }
+    for source in [".case off\n", ".case -\n"] {
+        let problem = first(source).err().map(|d| d.kind());
+        assert_eq!(problem, Some(DiagnosticKind::Unsupported), "{source}");
+    }
+}
