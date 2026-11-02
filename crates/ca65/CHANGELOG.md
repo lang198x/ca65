@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.24](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.23...lang198x-ca65-v0.0.24) - 2026-11-02
+
+### Added
+
+- ca65's macro packages, written for this crate
+- accept .case on, ca65's default
+- accept an absolute address size on .proc and .scope
+- read the .dbg lines a C compiler writes
+- lower .null, ca65's shorthand for the NULL segment
+
+### Fixed
+
+- run an .elseif's token functions only when its condition counts
+
 ## [0.0.23](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.22...lang198x-ca65-v0.0.23) - 2026-11-02
 
 ### Added
