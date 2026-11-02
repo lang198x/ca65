@@ -741,7 +741,11 @@ fn ca65_refuses_a_label_before_a_scope() {
 #[test]
 fn what_is_not_lowered_yet_says_so() {
     let profile = Profile::CA65_2_19_6502;
-    for source in [".byte .cpu\n", ".segment \"X\": dword\n", ".proc p: far\n"] {
+    for source in [
+        ".byte .bank(1)\n",
+        ".segment \"X\": dword\n",
+        ".proc p: far\n",
+    ] {
         let mut expander = Expander::new(source, profile).expect("parses");
         let mut mini = Mini::default();
         let active = expander.next_line(&mut mini).expect("a line");
@@ -1090,4 +1094,25 @@ fn the_65816s_addr_keeps_the_low_word() {
     let (bytes, _) = pass(".p816\n.addr -65537, 65537\n", HashMap::new()).expect("assembles");
     assert_eq!(bytes, [0xFF, 0xFF, 0x01, 0x00]);
     assert!(pass(".addr 65537\n", HashMap::new()).is_err());
+}
+
+/// `.cpu` asks the line which CPU is in force, and `.time` asks the
+/// assembler, so the two answer through a whole line too.
+#[test]
+fn a_line_knows_its_cpu_and_the_time() {
+    let source = ".setcpu \"65c02\"\n.word .cpu, .time & 0\n";
+    let profile = Profile::CA65_2_19_6502;
+    let mut expander = Expander::new(source, profile).expect("parses");
+    let mut mini = Mini::default();
+    let _setcpu = expander.next_line(&mut mini).expect("a line");
+    let active = expander.next_line(&mut mini).expect("a line");
+    let Ok(lowered) = line(&active, profile, &mini) else {
+        panic!("the line lowers")
+    };
+    let Some(Operation::Sized { values, .. }) = lowered.items.into_iter().find_map(|item| item.op)
+    else {
+        panic!("words")
+    };
+    let values: Vec<_> = values.iter().map(|v| mini.value(v)).collect();
+    assert_eq!(values, [Some(0x0032), Some(0)]);
 }

@@ -111,13 +111,21 @@ pub fn instruction(
     if has("immediate,zeropage") {
         return test(&mnemonic, &operands, range, known);
     }
-    // ca65 gives the 65816's `BRK` a signature byte too, which Isa198x
-    // has no form for yet.
-    if cpu == Cpu::Wdc65816 && mnemonic == "BRK" && !operands.is_empty() {
-        return Err(super::expr::unsupported(
-            range,
-            "`BRK` with a signature byte",
-        ));
+    // `BRK` pushes its address plus two, so the processor skips the byte
+    // after it, which is conventionally a signature for the handler. ca65
+    // writes one after `BRK $nn` or `BRK #$nn` on every CPU but the M740 and
+    // the 45GS02. Isa198x keeps one form per opcode in the 6502's set, so the
+    // signature is written as a byte after the opcode.
+    if mnemonic == "BRK" && !operands.is_empty() {
+        if matches!(cpu, Cpu::M740 | Cpu::Mega45gs02) {
+            return Err(illegal());
+        }
+        return match signature(&mnemonic, &operands, range, known)? {
+            Operation::Instruction { mut operands, .. } if operands.len() == 1 => {
+                Ok(Operation::Bytes(vec![Ir::Num(0x00), operands.remove(0)]))
+            }
+            _ => Err(illegal()),
+        };
     }
     if has("block-move") {
         return block_move(&mnemonic, &operands, range, known);
@@ -420,10 +428,14 @@ fn signature(
     };
     let operand = match operands {
         [operand] => operand,
+        // ca65 writes a lone `$02` for `COP`, but the 65816 reads the byte
+        // after it as the signature whatever it is, so a `COP` without one
+        // runs into the next instruction. Asm198x names the difference
+        // `cop-signature`.
         [] if mnemonic == "COP" => {
-            return Err(super::expr::unsupported(
+            return Err(invalid(
                 range,
-                "`COP` with no signature byte",
+                "`COP` takes a signature byte: the 65816 reads the next byte as one",
             ));
         }
         [] => return Err(illegal(range)),

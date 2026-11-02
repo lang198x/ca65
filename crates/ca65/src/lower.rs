@@ -135,6 +135,23 @@ pub trait Known {
     fn widths(&self) -> crate::Widths {
         crate::Widths::default()
     }
+
+    /// The CPU in force on the line, which `.cpu` reports. Lowering a line
+    /// answers this from the line; the default is the 6502.
+    fn cpu(&self) -> crate::Cpu {
+        crate::Cpu::Mos6502
+    }
+
+    /// The time ca65's `.time` gives: seconds since the Unix epoch, when the
+    /// assembler reads the line. The default is the system clock; an
+    /// assembler that wants repeatable output can give a fixed time.
+    fn time(&self) -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| {
+                i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+            })
+    }
 }
 
 /// The address size ca65 V2.19 gives `expr`, as its `StudyExpr` works it

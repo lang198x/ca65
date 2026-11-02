@@ -140,6 +140,32 @@ fn function(call: &CallExpr, range: TextRange, known: &dyn Known) -> Result<Ir, 
             let name = named(call, range, "`.referenced`")?;
             return Ok(Ir::Num(i64::from(known.is_referenced(&name))));
         }
+        // `.addrsize(name)`: the address size of a name defined above, as
+        // ca65 numbers them: 1 for the zero page, 2 for absolute, 3 for far.
+        // The name is not read, so it is not a use.
+        ".addrsize" => {
+            let name = named(call, range, "`.addrsize`")?;
+            let size = match known.name(&name) {
+                Value::Unknown => {
+                    return Err(invalid(range, &format!("unknown symbol or scope `{name}`")));
+                }
+                Value::Constant(value) => Size::of(value),
+                Value::Address(size)
+                | Value::Opaque(size)
+                | Value::Placed { size, .. }
+                | Value::Measured { size, .. } => size,
+            };
+            return Ok(Ir::Num(match size {
+                Size::Zero => 1,
+                Size::Absolute => 2,
+                Size::Far => 3,
+            }));
+        }
+        // `.cpu`: ca65's bit mask of the instruction sets the CPU in force has.
+        ".cpu" => return Ok(Ir::Num(cpu_mask(known.cpu()))),
+        // `.version`: ca65 V2.19, as ca65 encodes it.
+        ".version" => return Ok(Ir::Num(0x0213)),
+        ".time" => return Ok(Ir::Num(known.time())),
         ".const" => {
             let mut args = call.args();
             let value = match (args.next().and_then(|arg| arg.expr()), args.next()) {
@@ -199,6 +225,27 @@ fn function(call: &CallExpr, range: TextRange, known: &dyn Known) -> Result<Ir, 
             Ir::Bin(BinOp::Min, a, b)
         }
     })
+}
+
+/// The value ca65 V2.19's `.cpu` gives `cpu`: one bit for each instruction
+/// set it has, from ca65's `cpu.h`, as measured.
+fn cpu_mask(cpu: crate::Cpu) -> i64 {
+    use crate::Cpu;
+    match cpu {
+        Cpu::Mos6502 => 0x0002,
+        Cpu::Nmos6502X => 0x0006,
+        Cpu::Dtv6502 => 0x000A,
+        Cpu::Mos65sc02 => 0x0012,
+        Cpu::Mos65c02 => 0x0032,
+        Cpu::Wdc65c02 => 0x1032,
+        Cpu::Csg65ce02 => 0x2022,
+        Cpu::Csg4510 => 0x2422,
+        Cpu::Mega45gs02 => 0x2C22,
+        Cpu::Wdc65816 => 0x0052,
+        Cpu::HuC6280 => 0x0132,
+        Cpu::M740 => 0x0202,
+        Cpu::Sweet16 => 0x0080,
+    }
 }
 
 /// The one name `call` takes, for `what`. It is not read.
