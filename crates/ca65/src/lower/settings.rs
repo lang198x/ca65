@@ -1,12 +1,14 @@
 //! Commands that change how ca65 reads or lists the program, not what it
-//! makes: the CPU, smart mode, `.autoimport`, the listing, debug
-//! information and file options.
+//! makes: the CPU, the character map, smart mode, `.autoimport`, the
+//! listing, debug information and file options.
 //!
 //! Each follows ca65 V2.19's `pseudo.c`. The expander follows the CPU a
 //! line chooses, and each line says which is in force. The rest make no bytes, so they are checked as ca65 checks
 //! them and then have no effect. `.pushcpu` and `.popcpu` are reported, so
 //! the assembler can keep ca65's stack of CPUs and refuse a `.popcpu` with
-//! nothing to pop.
+//! nothing to pop. `.charmap`, `.pushcharmap` and `.popcharmap` are reported
+//! the same way, and the assembler keeps the map lowering reads through
+//! [`Known::translate`].
 
 use lang198x_syntax::Diagnostic;
 
@@ -24,6 +26,63 @@ pub enum CpuStack {
     Push,
     /// `.popcpu` takes back the one kept last.
     Pop,
+}
+
+/// A change a line makes to ca65's character map, which turns the
+/// characters of strings and character constants into the bytes the
+/// program holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Charmap {
+    /// `.charmap index, value`: the character `index` is `value` from now on.
+    Set {
+        /// The character.
+        index: u8,
+        /// The byte it becomes.
+        value: u8,
+    },
+    /// `.pushcharmap` keeps the map. ca65 keeps 16 at most.
+    Push,
+    /// `.popcharmap` takes back the one kept last.
+    Pop,
+}
+
+/// What a character-map command does, if `command` is one: `.charmap`,
+/// `.pushcharmap` or `.popcharmap`, measured on ca65 V2.19.
+pub(super) fn charmap(command: &Command, known: &dyn Known) -> Result<Option<Charmap>, Diagnostic> {
+    let range = command.syntax().text_range();
+    let word = command
+        .word()
+        .map(|w| w.text().to_ascii_lowercase())
+        .unwrap_or_default();
+    let values: Vec<Expr> = command.values().collect();
+    let none = |change| match values.as_slice() {
+        [] => Ok(Some(change)),
+        [extra, ..] => Err(invalid(
+            extra.syntax().text_range(),
+            "expected the end of the line",
+        )),
+    };
+    match word.as_str() {
+        ".pushcharmap" => none(Charmap::Push),
+        ".popcharmap" => none(Charmap::Pop),
+        ".charmap" => {
+            let [index, value] = values.as_slice() else {
+                return Err(invalid(range, "`.charmap` takes a character and its byte"));
+            };
+            let constant = |value: &Expr, what: &str| -> Result<u8, Diagnostic> {
+                let lowered = expr::expression(value, known)?;
+                let number = expr::constant(&lowered, known).ok_or_else(|| {
+                    invalid(value.syntax().text_range(), "Constant expression expected")
+                })?;
+                u8::try_from(number).map_err(|_| invalid(value.syntax().text_range(), what))
+            };
+            let index = constant(index, "Index must be in byte range")?;
+            let value = constant(value, "Replacement character code must be in byte range")?;
+            Ok(Some(Charmap::Set { index, value }))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// What a setting command does to the CPU stack, as `Some`, if `command`

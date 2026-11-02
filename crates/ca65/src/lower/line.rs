@@ -5,7 +5,7 @@ use lang198x_syntax::{Diagnostic, SyntaxToken};
 
 use super::expr::{self, invalid, unsupported};
 use super::record::{self as records, Record};
-use super::settings::{CpuStack, setting};
+use super::settings::{Charmap, CpuStack, charmap, setting};
 use super::{Known, Size, Value, instruction};
 use crate::Profile;
 use crate::ast::{Command, Expr, Statement, View};
@@ -45,6 +45,9 @@ pub struct Lowered {
     pub binary: Option<Binary>,
     /// The change the line makes to ca65's stack of CPUs.
     pub cpu: Option<CpuStack>,
+    /// The change the line makes to ca65's character map, made after its
+    /// statements.
+    pub charmap: Option<Charmap>,
     /// What the line does in a record, or the room a `.tag` makes.
     pub record: Option<Record>,
 }
@@ -204,6 +207,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
     let mut visibility = None;
     let mut binary = None;
     let mut cpu = None;
+    let mut charmap_change = None;
     let mut record = None;
     let mut defined = Vec::new();
     let op = if line.label_only() {
@@ -264,15 +268,21 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
                                     cpu = change;
                                     None
                                 }
-                                None => match records::record(
-                                    &Statement::Command(command.clone()),
-                                    known,
-                                )? {
+                                None => match charmap(&command, known)? {
                                     Some(change) => {
-                                        record = Some(change);
+                                        charmap_change = Some(change);
                                         None
                                     }
-                                    None => command_op(&command, line, known)?,
+                                    None => match records::record(
+                                        &Statement::Command(command.clone()),
+                                        known,
+                                    )? {
+                                        Some(change) => {
+                                            record = Some(change);
+                                            None
+                                        }
+                                        None => command_op(&command, line, known)?,
+                                    },
                                 },
                             },
                         },
@@ -314,6 +324,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
         visibility,
         binary,
         cpu,
+        charmap: charmap_change,
         record,
     })
 }
@@ -369,6 +380,10 @@ impl Known for OnLine<'_> {
 
     fn cpu(&self) -> crate::Cpu {
         self.cpu
+    }
+
+    fn translate(&self, character: u8) -> u8 {
+        self.known.translate(character)
     }
 
     fn time(&self) -> i64 {
@@ -683,7 +698,14 @@ fn command_op(
         }
     };
     Ok(Some(match word.as_str() {
-        ".byte" | ".byt" => sized(1, false, bytes(at_least_one(values())?, line, known)?),
+        ".byte" | ".byt" => sized(1, false, bytes(at_least_one(values())?, line, known, true)?),
+        // `.literal` is `.byte` with its strings left as written: the
+        // character map does not touch them, though it does a character.
+        ".literal" => sized(
+            1,
+            false,
+            bytes(at_least_one(values())?, line, known, false)?,
+        ),
         // ca65 takes only strings here, and at least one.
         ".asciiz" => {
             let mut out = Vec::new();
@@ -691,7 +713,11 @@ fn command_op(
                 let bytes = string(&value, line).ok_or_else(|| {
                     invalid(value.syntax().text_range(), "`.asciiz` takes only strings")
                 })?;
-                out.extend(bytes.into_iter().map(|b| Ir::Num(i64::from(b))));
+                out.extend(
+                    bytes
+                        .into_iter()
+                        .map(|b| Ir::Num(i64::from(known.translate(b)))),
+                );
             }
             out.push(Ir::Num(0));
             sized(1, false, out)
@@ -857,12 +883,21 @@ fn at_offset(value: Ir, offset: i64) -> Ir {
     }
 }
 
-/// The values of `.byte` and its kin: a string gives each of its bytes.
-fn bytes(values: Vec<Expr>, line: &ActiveLine, known: &dyn Known) -> Result<Vec<Ir>, Diagnostic> {
+/// The values of `.byte` and its kin: a string gives each of its bytes,
+/// through the character map if `translated`.
+fn bytes(
+    values: Vec<Expr>,
+    line: &ActiveLine,
+    known: &dyn Known,
+    translated: bool,
+) -> Result<Vec<Ir>, Diagnostic> {
     let mut out = Vec::new();
     for value in values {
         match string(&value, line) {
-            Some(bytes) => out.extend(bytes.into_iter().map(|b| Ir::Num(i64::from(b)))),
+            Some(bytes) => out.extend(bytes.into_iter().map(|b| {
+                let b = if translated { known.translate(b) } else { b };
+                Ir::Num(i64::from(b))
+            })),
             None => out.push(expr::expression(&value, known)?),
         }
     }

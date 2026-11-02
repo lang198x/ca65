@@ -823,6 +823,10 @@ impl Known for Defaulted<'_> {
     fn pc(&self) -> Value {
         self.0.pc()
     }
+
+    fn translate(&self, character: u8) -> u8 {
+        self.0.translate(character)
+    }
 }
 
 fn register(token: Option<SyntaxToken>) -> Option<String> {
