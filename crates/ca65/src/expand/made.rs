@@ -7,8 +7,9 @@
 //! name even when it is spelt like a register.
 //!
 //! A string a token function made may hold a byte above 127, which the text
-//! cannot. Its bytes are kept in [`Strings`], beside the text as provenance
-//! is, and copied with the token wherever it goes.
+//! cannot, or characters `.sprintf` wrote, which ca65's character map leaves
+//! alone. Its bytes and which of them are raw are kept in [`Strings`], beside
+//! the text as provenance is, and copied with the token wherever it goes.
 
 use std::collections::HashMap;
 
@@ -19,26 +20,51 @@ use lang198x_syntax::{
 use super::defines::Piece;
 use crate::{Token, kinds};
 
-/// The made strings in one text that it cannot hold, each with its range
-/// and its bytes.
-pub(super) type MadeStrings = Vec<(TextRange, Vec<u8>)>;
+/// What is kept of a made string: its bytes, and which of them are raw,
+/// which ca65's character map leaves alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Kept {
+    pub(super) bytes: Vec<u8>,
+    pub(super) raw: Vec<bool>,
+}
 
-/// The bytes of each made string whose text cannot hold them, by where its
-/// token is.
+impl Kept {
+    /// What to keep of a string holding `bytes`, with `raw` marking the
+    /// raw ones, or `None` if its text holds it all: every byte below 128
+    /// and none raw.
+    pub(super) fn of(bytes: &[u8], raw: Option<&[bool]>) -> Option<Self> {
+        let raw = raw.map_or_else(|| vec![false; bytes.len()], <[bool]>::to_vec);
+        (!bytes.is_ascii() || raw.contains(&true)).then(|| Self {
+            bytes: bytes.to_vec(),
+            raw,
+        })
+    }
+}
+
+/// The made strings in one text that it cannot hold, each with its range
+/// and what is kept of it.
+pub(super) type MadeStrings = Vec<(TextRange, Kept)>;
+
+/// What is kept of each made string whose text cannot hold it, by where
+/// its token is.
 #[derive(Debug, Default)]
-pub(super) struct Strings(HashMap<Span, Vec<u8>>);
+pub(super) struct Strings(HashMap<Span, Kept>);
 
 impl Strings {
     /// The bytes of the made string at `at`, if it is one.
     pub(super) fn get(&self, at: Span) -> Option<&[u8]> {
-        self.0.get(&at).map(Vec::as_slice)
+        self.0.get(&at).map(|kept| kept.bytes.as_slice())
     }
 
-    /// A piece copied from `token`, at `site`, keeping a made string's bytes.
+    /// A piece copied from `token`, at `site`, keeping what is kept of a
+    /// made string.
     pub(super) fn piece(&self, token: &SyntaxToken, origin: Origin, site: Span) -> Piece {
         let mut piece = Piece::new(token, origin, site);
-        if token.kind() == kinds::STRING {
-            piece.bytes = self.get(site).map(<[u8]>::to_vec);
+        if token.kind() == kinds::STRING
+            && let Some(kept) = self.0.get(&site)
+        {
+            piece.bytes = Some(kept.bytes.clone());
+            piece.raw = Some(kept.raw.clone());
         }
         piece
     }
@@ -46,8 +72,8 @@ impl Strings {
     /// Keeps the bytes of each made string in an expansion just added as
     /// `text`.
     pub(super) fn add(&mut self, text: TextId, strings: MadeStrings) {
-        for (range, bytes) in strings {
-            self.0.insert(Span::new(text, range), bytes);
+        for (range, kept) in strings {
+            self.0.insert(Span::new(text, range), kept);
         }
     }
 
@@ -56,7 +82,7 @@ impl Strings {
         self.0
             .iter()
             .filter(|(at, _)| at.text() == text)
-            .map(|(at, bytes)| (at.range(), bytes.clone()))
+            .map(|(at, kept)| (at.range(), kept.clone()))
             .collect()
     }
 }
@@ -85,9 +111,9 @@ impl Made {
         self.push_bytes(text, kind, origin, None);
     }
 
-    /// Adds one token, keeping `bytes` if it is a made string whose text
-    /// cannot hold them.
-    fn push_bytes(&mut self, text: &str, kind: SyntaxKind, origin: Origin, bytes: Option<&[u8]>) {
+    /// Adds one token, keeping what is kept of it if it is a made string
+    /// whose text cannot hold it.
+    fn push_bytes(&mut self, text: &str, kind: SyntaxKind, origin: Origin, kept: Option<Kept>) {
         let Some(len) = TextSize::of(text).filter(|len| *len > TextSize::ZERO) else {
             return;
         };
@@ -97,8 +123,8 @@ impl Made {
         self.end = range.end();
         self.builder.push(text, origin);
         self.tokens.push(Token::new(kind, len));
-        if let Some(bytes) = bytes {
-            self.strings.push((range, bytes.to_vec()));
+        if let Some(kept) = kept {
+            self.strings.push((range, kept));
         }
     }
 
@@ -111,17 +137,21 @@ impl Made {
         origin: Origin,
         strings: &Strings,
     ) {
-        self.push_bytes(token.text(), token.kind(), origin, strings.get(from));
+        self.push_bytes(
+            token.text(),
+            token.kind(),
+            origin,
+            strings.0.get(&from).cloned(),
+        );
     }
 
     /// Adds `piece`.
     pub(super) fn piece(&mut self, piece: &Piece) {
-        self.push_bytes(
-            &piece.text,
-            piece.kind,
-            piece.origin,
-            piece.bytes.as_deref(),
-        );
+        let kept = piece
+            .bytes
+            .as_deref()
+            .and_then(|bytes| Kept::of(bytes, piece.raw.as_deref()));
+        self.push_bytes(&piece.text, piece.kind, piece.origin, kept);
     }
 
     /// The text's builder, the tokens that cover it, and its made strings.

@@ -1184,3 +1184,34 @@ fn the_character_map_translates_characters() {
         assert!(problem.contains(error), "{source:?}: {problem}");
     }
 }
+
+/// What `.sprintf` writes for a conversion is raw: ca65's character map
+/// leaves it alone, while the format's own characters, and a string
+/// `.concat` joins on, go through the map.
+#[test]
+fn a_conversion_is_not_translated() {
+    let assembled = |body: &str| {
+        let source = format!(".charmap $41, $05\n.charmap $31, $09\n.charmap $78, $08\n{body}\n");
+        pass(&source, HashMap::new()).map(|(bytes, _)| bytes)
+    };
+    assert_eq!(
+        assembled(".byte .sprintf(\"x%cy\", $41)"),
+        Ok(vec![8, 0x41, 0x79])
+    );
+    assert_eq!(assembled(".byte .sprintf(\"%d\", 1)"), Ok(vec![0x31]));
+    assert_eq!(
+        assembled(".byte .concat(.sprintf(\"%s\", \"A\"), \"A\")"),
+        Ok(vec![0x41, 5])
+    );
+    assert_eq!(
+        assembled(".asciiz .sprintf(\"A%sA\", \"A\")"),
+        Ok(vec![5, 0x41, 5, 0])
+    );
+    // A byte above 127 is kept as it was.
+    assert_eq!(assembled(".byte .sprintf(\"%c\", $C1)"), Ok(vec![0xC1]));
+    // `.strat` goes through the map whatever the byte.
+    assert_eq!(
+        assembled(".byte .strat(.sprintf(\"%s\", \"A\"), 0)"),
+        Ok(vec![5])
+    );
+}
