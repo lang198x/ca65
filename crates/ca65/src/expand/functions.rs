@@ -61,8 +61,8 @@ fn is_function(piece: &Piece, in_list: bool) -> bool {
 /// What a token function asks of whatever runs it.
 pub(super) trait Answers {
     /// The value of the constant expression made of `pieces`, for a call
-    /// at `site`.
-    fn value(&mut self, pieces: &[Piece], site: Span) -> Result<i64, Problem>;
+    /// at `site`, when `finished` token functions on the line have run.
+    fn value(&mut self, pieces: &[Piece], site: Span, finished: usize) -> Result<i64, Problem>;
 
     /// Whether a classic macro is named `name`, in this case.
     fn is_macro(&self, name: &str) -> bool;
@@ -79,18 +79,58 @@ pub(super) fn any(pieces: &[Piece]) -> bool {
     pieces.iter().any(|piece| is_function(piece, false))
 }
 
+/// Whether `line` calls a token function, as written.
+pub(super) fn calls(line: &crate::ast::Line) -> bool {
+    use crate::ast::View;
+    line.syntax()
+        .descendants()
+        .filter_map(lang198x_syntax::SyntaxElement::into_token)
+        .any(|token| {
+            let named = |names: &[&str]| names.iter().any(|f| f.eq_ignore_ascii_case(token.text()));
+            token.kind() == kinds::CONTROL && (named(SCANNER) || named(VALUES))
+        })
+}
+
+/// The calls that ask whether a name has been used.
+const REFERENCED: &[&str] = &[".ref", ".referenced"];
+
+/// What running a line's token functions made: its pieces, and for each
+/// `.ref` or `.referenced` among them, its index and how many functions had
+/// finished before it.
+pub(super) struct Ran {
+    pub(super) pieces: Vec<Piece>,
+    pub(super) refs: Vec<(usize, usize)>,
+}
+
 /// Runs the token functions in `pieces`, asking `answers` what they need.
-pub(super) fn run(pieces: Vec<Piece>, answers: &mut dyn Answers) -> Result<Vec<Piece>, Problem> {
+///
+/// ca65 runs each function as its scanner reaches it, so a use of a name
+/// that a function makes comes after everything before the function on the
+/// line. Each value a function asks for says how many functions have
+/// finished, and so does each `.ref` handed on, so that whatever answers
+/// `.ref` can count only the uses made before it.
+pub(super) fn run(pieces: Vec<Piece>, answers: &mut dyn Answers) -> Result<Ran, Problem> {
     let mut stream = Stream {
         stack: vec![pieces.into_iter()],
         answers,
         lists: 0,
+        finished: 0,
     };
-    let mut out = Vec::new();
+    let mut ran = Ran {
+        pieces: Vec::new(),
+        refs: Vec::new(),
+    };
     while let Some(piece) = stream.next()? {
-        out.push(piece);
+        let asks = piece.kind == kinds::CONTROL
+            && REFERENCED
+                .iter()
+                .any(|f| f.eq_ignore_ascii_case(&piece.text));
+        if asks {
+            ran.refs.push((ran.pieces.len(), stream.finished));
+        }
+        ran.pieces.push(piece);
     }
-    Ok(out)
+    Ok(ran)
 }
 
 struct Stream<'e> {
@@ -98,6 +138,8 @@ struct Stream<'e> {
     answers: &'e mut dyn Answers,
     /// How many token lists are being read, one inside another.
     lists: usize,
+    /// How many functions have finished on the line.
+    finished: usize,
 }
 
 /// A call being read: where it is, for messages and for what it makes.
@@ -154,6 +196,7 @@ impl Stream<'_> {
                     site: piece.site,
                 };
                 let made = self.call(&call)?;
+                self.finished += 1;
                 let mut text = vec![call.gap()];
                 text.extend(made);
                 text.push(call.gap());
@@ -206,7 +249,7 @@ impl Stream<'_> {
         if pieces.iter().all(Piece::is_blank) {
             return Err(call.problem(format!("expected a value in `{}`", call.name)));
         }
-        self.answers.value(&pieces, call.site)
+        self.answers.value(&pieces, call.site, self.finished)
     }
 
     /// The pieces of an expression, up to a `,` or `)` outside parentheses.

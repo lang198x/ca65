@@ -19,7 +19,7 @@ mod macros;
 mod made;
 mod repeats;
 
-pub use expander::{ActiveLine, Expander, Host, IncludedFile, Limits};
+pub use expander::{ActiveLine, Expander, Finished, Host, IncludedFile, Limits};
 pub use locate::{FrameAt, Location, MacroFrame, Reading};
 
 #[cfg(test)]

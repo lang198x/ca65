@@ -2,7 +2,7 @@
 //! assembled by a two-pass assembler as small as the tests need, against
 //! the bytes ca65 V2.19 and ld65 wrote under a flat link at 0.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use asm198x_ir::{DiagSeverity, Expr as Ir, Operation, align_pad, next_pc};
@@ -12,7 +12,7 @@ use lang198x_syntax::DiagnosticKind;
 use super::line;
 use crate::Profile;
 use crate::ast::{Expr, NameRef};
-use crate::expand::{Expander, Host};
+use crate::expand::{Expander, Finished, Host};
 use crate::lower::{
     self, Binary, Declared, Known, Scope, Segment, Size, Value, Visibility, Visible,
 };
@@ -29,12 +29,34 @@ struct Mini {
     org: bool,
     /// The names read so far.
     read: RefCell<HashSet<String>>,
+    /// The names the line's token functions read, each with how many
+    /// functions had finished, kept aside until the line is lowered.
+    function_reads: RefCell<Vec<(usize, String)>>,
+    /// While a token function's value is lowered, how many had finished.
+    in_function: Cell<Option<usize>>,
     /// The character map's changes, and the maps kept by `.pushcharmap`.
     charmap: HashMap<u8, u8>,
     kept: Vec<HashMap<u8, u8>>,
 }
 
 impl Mini {
+    /// Counts the names the line's token functions read as read.
+    fn record_function_reads(&self) {
+        let read = self.function_reads.take();
+        self.read
+            .borrow_mut()
+            .extend(read.into_iter().map(|(_, name)| name));
+    }
+
+    fn was_read_before(&self, name: &str, finished: usize) -> bool {
+        self.read.borrow().contains(name)
+            || self
+                .function_reads
+                .borrow()
+                .iter()
+                .any(|(at, read)| *at < finished && read == name)
+    }
+
     fn value(&self, expr: &Ir) -> Option<i64> {
         let lookup = |name: &str| match self.known.get(name) {
             Some(Value::Constant(value)) => Some(*value),
@@ -66,11 +88,23 @@ impl Known for Mini {
     }
 
     fn is_referenced(&self, name: &str) -> bool {
-        self.read.borrow().contains(name)
+        self.was_read_before(name, usize::MAX)
+    }
+
+    fn is_referenced_before(&self, name: &str, finished: usize) -> bool {
+        self.was_read_before(name, finished)
     }
 
     fn read(&self, name: &str) {
-        self.read.borrow_mut().insert(name.to_owned());
+        match self.in_function.get() {
+            Some(finished) => self
+                .function_reads
+                .borrow_mut()
+                .push((finished, name.to_owned())),
+            None => {
+                self.read.borrow_mut().insert(name.to_owned());
+            }
+        }
     }
 
     fn translate(&self, character: u8) -> u8 {
@@ -88,8 +122,22 @@ impl Host for Mini {
         self.known.contains_key(&name.text())
     }
 
+    fn evaluate_in_function(&mut self, expr: &Expr, finished: usize) -> Result<i64, String> {
+        self.in_function.set(Some(finished));
+        let value = self.evaluate(expr);
+        self.in_function.set(None);
+        value
+    }
+
+    fn evaluate_condition(&mut self, expr: &Expr, finished: &Finished) -> Result<i64, String> {
+        let lowered = lower::condition(expr, &*self, finished);
+        self.record_function_reads();
+        let lowered = lowered.map_err(|d| d.message().to_owned())?;
+        self.value(&lowered).ok_or_else(|| "not known".to_owned())
+    }
+
     fn is_referenced(&mut self, name: &NameRef) -> bool {
-        self.read.borrow().contains(&name.text())
+        self.was_read_before(&name.text(), usize::MAX)
     }
 
     fn is_constant(&mut self, expr: &Expr) -> bool {
@@ -113,6 +161,7 @@ fn pass(source: &str, finals: HashMap<String, i64>) -> Result<(Vec<u8>, Mini), S
     let mut bytes = Vec::new();
     while let Some(active) = expander.next_line(&mut mini) {
         let lowered = line(&active, profile, &mini).map_err(|d| d.message().to_owned())?;
+        mini.record_function_reads();
         match lowered.charmap {
             Some(lower::Charmap::Set { index, value }) => {
                 mini.charmap.insert(index, value);
@@ -474,6 +523,74 @@ const MEASURED: &[(&str, Option<&str>)] = &[
     (".warning \"a\" junk\n.byte 1\n", Some("01")),
     (".out \"a\" junk\n.byte 1\n", None),
     (".assert 0, warning, \"a\" junk\n.byte 1\n", None),
+    // A token function runs where ca65 reads it, so a `.ref` before it on
+    // the line does not count the names it reads, and one after it does.
+    // A plain read before the `.ref` counts. (lang198x/ca65#52)
+    (
+        "V=2\n.byte .ref(V),.sprintf(\"%d\",V),.ref(V)\n",
+        Some("003201"),
+    ),
+    (
+        "V=2\n.byte .ref(V)+.strlen(.sprintf(\"%d\",V)),.ref(V)\n",
+        Some("0101"),
+    ),
+    (
+        "V=2\nW=3\n.byte .sprintf(\"%d\",V),.ref(V),.ref(W),.sprintf(\"%d\",W),.ref(W)\n",
+        Some("3201003301"),
+    ),
+    (
+        "V=2\n.byte .ref(V),.tcount({.sprintf(\"%d\",V)}),.ref(V)\n",
+        Some("000101"),
+    ),
+    (
+        "V=2\n.byte .tcount({.ref(V) .sprintf(\"%d\",V)}),.ref(V)\n",
+        Some("0501"),
+    ),
+    (
+        "V=2\n.byte .sprintf(\"%d%d\",.ref(V),V),.ref(V)\n",
+        Some("303201"),
+    ),
+    ("V=2\n.byte V,.ref(V),.sprintf(\"%d\",V)\n", Some("020132")),
+    (
+        "V=2\n.byte .referenced(V),.ref(V),V,.ref(V)\n",
+        Some("00000201"),
+    ),
+    ("V=2\n.byte .ref(V),.left(1,{V}),.ref(V)\n", Some("000201")),
+    (
+        "V=2\n.byte .ref(V),.strlen(.string(V)),.ref(V)\n",
+        Some("000100"),
+    ),
+    (
+        ".byte .ref(U),.sprintf(\"%d\",.defined(U)),.ref(U)\n",
+        Some("003000"),
+    ),
+    (
+        "V=2\n.if .ref(V) .or .strlen(.sprintf(\"%d\",V))=9\n.byte 1\n.else\n.byte 2\n.endif\n",
+        Some("02"),
+    ),
+    (
+        "V=2\n.if .ref(V)+V+.strlen(.sprintf(\"%d\",V))=3\n.byte 1\n.else\n.byte 2\n.endif\n",
+        Some("01"),
+    ),
+    (
+        "V=2\n.if V+.ref(V)+.strlen(.sprintf(\"%d\",V))=4\n.byte 1\n.else\n.byte 2\n.endif\n",
+        Some("01"),
+    ),
+    (
+        "V=2\n.repeat .strlen(.sprintf(\"%d\",V))\nnop\n.endrepeat\n.byte .ref(V)\n",
+        Some("ea01"),
+    ),
+    (
+        "V=2\n.macro m\n.byte .ref(V),.sprintf(\"%d\",V),.ref(V)\n.endmacro\nm\n",
+        Some("003201"),
+    ),
+    // ca65 defines a line's label before it runs the line's functions.
+    (
+        "H: .byte .sprintf(\"%d\",.defined(H)),.const(H-H)\n",
+        Some("3101"),
+    ),
+    (": .byte .sprintf(\"%d\", 1)\n.word :-\n", Some("310000")),
+    (".ident(\"q\"): .byte .defined(q)\n", Some("01")),
 ];
 
 #[test]
