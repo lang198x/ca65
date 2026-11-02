@@ -821,11 +821,7 @@ fn settings_report_the_cpu_stack_and_constructors_export() {
 
     // What is not lowered yet is not the same as refused: ca65's `none`, a
     // CPU with no instructions, and some debug information.
-    for source in [
-        ".setcpu \"none\"\n",
-        ".dbg line, \"t.s\", 3\n",
-        ".dbg sym, \"x\"\n",
-    ] {
+    for source in [".setcpu \"none\"\n", ".dbg file, \"t.c\", 1 + 1, 0\n"] {
         let problem = first(source).err().expect(source);
         assert_eq!(problem.kind(), DiagnosticKind::Unsupported, "{source}");
     }
@@ -1215,4 +1211,83 @@ fn a_conversion_is_not_translated() {
         assembled(".byte .strat(.sprintf(\"%s\", \"A\"), 0)"),
         Ok(vec![5])
     );
+}
+
+/// The `.dbg` lines a C compiler writes, read as ca65 V2.19 reads them, with
+/// its errors. What the file table and scopes decide is the assembler's.
+#[test]
+fn debug_information_is_reported() {
+    use crate::lower::Dbg;
+    let dbg = |source: &str| {
+        first(source)
+            .map(|l| l.dbg)
+            .map_err(|d| d.message().to_owned())
+    };
+    assert_eq!(
+        dbg(".dbg file, \"t.c\", 150, 1793615259\n"),
+        Ok(Some(Dbg::File {
+            name: "t.c".to_owned()
+        }))
+    );
+    assert_eq!(
+        dbg(".dbg line, \"t.c\", 2\n"),
+        Ok(Some(Dbg::Line {
+            file: "t.c".to_owned()
+        }))
+    );
+    assert_eq!(dbg(".dbg line\n"), Ok(Some(Dbg::EndLine)));
+    assert_eq!(
+        dbg(".dbg func, \"total\", \"00\", static, \"_total\"\n"),
+        Ok(Some(Dbg::Func {
+            asm_name: "_total".to_owned()
+        }))
+    );
+    assert_eq!(
+        dbg(".dbg sym, \"r\", \"00\", auto, -2\n"),
+        Ok(Some(Dbg::Sym { asm_name: None }))
+    );
+    assert_eq!(
+        dbg(".dbg sym, \"c\", \"0a\", static, \"_c\"\n"),
+        Ok(Some(Dbg::Sym {
+            asm_name: Some("_c".to_owned())
+        }))
+    );
+    assert_eq!(
+        dbg(".dbg sym, \"r\", \"00\", register, \"regbank\", 4\n"),
+        Ok(Some(Dbg::Sym {
+            asm_name: Some("regbank".to_owned())
+        }))
+    );
+    assert_eq!(dbg("nop\n"), Ok(None));
+    for (source, error) in [
+        (".dbg\n", "Expected an identifier"),
+        (".dbg 1\n", "Expected an identifier"),
+        (".dbg zz\n", "Expected FILE, FUNC, LINE or SYM"),
+        (".dbg file \"t.c\", 1, 2\n", "Expected `,`"),
+        (".dbg file, 1, 1, 2\n", "String constant expected"),
+        (
+            ".dbg line, \"t.c\", -1\n",
+            "Line number is out of valid range",
+        ),
+        (
+            ".dbg func, \"f\", \"0\", static, \"_f\"\n",
+            "Type value has invalid length",
+        ),
+        (
+            ".dbg func, \"f\", \"0g\", static, \"_f\"\n",
+            "Type value contains invalid characters",
+        ),
+        (
+            ".dbg func, \"f\", \"00\", auto, \"_f\"\n",
+            "Storage class specifier expected",
+        ),
+        (
+            ".dbg sym, \"x\", \"00\", 1, 2\n",
+            "Storage class specifier expected",
+        ),
+        (".dbg line, \"t.c\", 2, 3\n", "Expected the end of the line"),
+    ] {
+        let problem = dbg(source).expect_err(source);
+        assert!(problem.contains(error), "{source:?}: {problem}");
+    }
 }
