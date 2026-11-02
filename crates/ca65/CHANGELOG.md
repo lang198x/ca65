@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.23](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.22...lang198x-ca65-v0.0.23) - 2026-11-02
+
+### Added
+
+- leave what .sprintf converts out of the character map
+- lower ca65's character map and .literal
+- lower .addrsize, .cpu, .version, .time and BRK's signature
+
 ## [0.0.22](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.21...lang198x-ca65-v0.0.22) - 2026-11-01
 
 ### Added
