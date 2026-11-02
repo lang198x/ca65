@@ -127,6 +127,20 @@ pub(super) fn setting(
         ".pushcpu" => return Ok(Some(Some(CpuStack::Push))),
         ".popcpu" => return Ok(Some(Some(CpuStack::Pop))),
         ".smart" | ".autoimport" | ".list" | ".debuginfo" => switch(command)?,
+        // Names are told apart by case unless `.case off` says otherwise,
+        // which changes how every later name is read: not lowered yet.
+        ".case" => {
+            switch(command)?;
+            let off = command
+                .switch()
+                .is_some_and(|t| t.kind() == kinds::MINUS || t.text().eq_ignore_ascii_case("off"));
+            if off {
+                return Err(unsupported(
+                    range,
+                    "`.case off`, which makes names ignore case,",
+                ));
+            }
+        }
         ".listbytes" => int_arg(command, &values, known, 4, 255)?,
         ".pagelen" | ".pagelength" => int_arg(command, &values, known, 32, 127)?,
         ".fileopt" | ".fopt" => file_option(command, &values, line, known)?,

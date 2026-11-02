@@ -86,7 +86,7 @@ const SHAPES: &[(&str, Shape)] = &[
     (".BYTE", Shape::Values),
     (".CAP", Shape::Unexpected),
     (".CAPABILITY", Shape::Unexpected),
-    (".CASE", Shape::Unsupported),
+    (".CASE", Shape::Switch),
     (".CHARMAP", Shape::Values),
     (".CODE", Shape::Bare),
     (".CONCAT", Shape::Synthesised),
