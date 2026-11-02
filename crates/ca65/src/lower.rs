@@ -144,6 +144,18 @@ pub trait Known {
         None
     }
 
+    /// The value to use for ca65's `.bank(value)`: the `bank` attribute of
+    /// the memory area that `value`'s segment runs in. Only the linker can
+    /// tell, so an assembler that links answers with an expression of its
+    /// own, which it resolves once segments are placed. ca65 gives the
+    /// result the absolute address size and never counts it as a constant,
+    /// so the expression should be known by that size alone. The default,
+    /// `None`, leaves `.bank` not lowered.
+    fn bank(&self, value: &asm198x_ir::Expr) -> Option<asm198x_ir::Expr> {
+        let _ = value;
+        None
+    }
+
     /// Told of each name lowering reads as a value, in the order ca65 reads
     /// them, which ca65 counts as a use. A name in `.defined`,
     /// `.referenced` or `.sizeof` is not read, but one in `.const` is. So

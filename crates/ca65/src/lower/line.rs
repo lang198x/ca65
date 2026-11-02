@@ -415,6 +415,10 @@ impl Known for OnLine<'_> {
         self.finished.at(at)
     }
 
+    fn bank(&self, value: &Ir) -> Option<Ir> {
+        self.known.bank(value)
+    }
+
     fn read(&self, name: &str) {
         self.known.read(name);
     }
