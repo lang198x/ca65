@@ -63,6 +63,18 @@ fn encode(op: &Operation, symbols: &dyn Fn(&str) -> Option<i64>) -> Option<Strin
 
 /// Encodes an instruction for `cpu` at 0 as the back end does.
 fn encode_on(cpu: Cpu, op: &Operation, symbols: &dyn Fn(&str) -> Option<i64>) -> Option<String> {
+    // `BRK` with a signature is written as bytes.
+    if let Operation::Bytes(values) = op {
+        return values
+            .iter()
+            .map(|expr| {
+                let value = expr
+                    .eval_with(&|name: &str| symbols(name), Some(0), 0)
+                    .ok()?;
+                (0..0x100).contains(&value).then(|| format!("{value:02x}"))
+            })
+            .collect();
+    }
     let Operation::Instruction {
         mnemonic,
         mode,
@@ -381,15 +393,17 @@ fn every_measured_huc6280_line_matches_ca65() {
 /// registers 8 bits wide. `None` is a line ca65 refused, with its message,
 /// or one lowering does not handle yet.
 const MEASURED_65816: &[(&str, Option<&str>)] = &[
-    ("cop", None), // ca65: 02, a form Isa198x lacks; refused as not lowered
+    ("cop", None), // ca65: 02; refused, Asm198x's `cop-signature` divergence
     ("cop #$12", Some("0212")),
     ("cop $12", Some("0212")),
     ("wdm", None), // Illegal addressing mode
     ("wdm #$12", Some("4212")),
     ("wdm $12", Some("4212")),
     ("brk", Some("00")),
-    ("brk #$12", None), // ca65: 0012, a form Isa198x lacks; refused as not lowered
-    ("brk $12", None),  // ca65: 0012, a form Isa198x lacks; refused as not lowered
+    ("brk #$12", Some("0012")),
+    ("brk #$1234", None), // Range error (4660 not in [0..255])
+    ("brk $12", Some("0012")),
+    ("brk $1234", None), // Illegal addressing mode
     ("jsl $1234", Some("22341200")),
     ("jsl $123456", Some("22563412")),
     ("jml $1234", Some("5c341200")),
@@ -1403,4 +1417,41 @@ fn every_line_of_cc65s_opcode_tests_for_the_6502s_relatives_assembles_as_ca65_as
         }
     }
     assert!(wrong.is_empty(), "{}\n{}", wrong.len(), wrong.join("\n"));
+}
+
+/// ca65 V2.19 writes a signature byte after `BRK` on every CPU but the M740
+/// and the 45GS02, which refuse it with `Illegal addressing mode`.
+#[test]
+fn brk_takes_a_signature_where_ca65_allows_one() {
+    for cpu in Cpu::ALL {
+        if cpu == Cpu::Sweet16 {
+            continue;
+        }
+        let profile = Profile::CA65_2_19_6502.with_cpu(cpu);
+        for source in ["brk $12", "brk #$12"] {
+            let got = lowered_on(profile, source, &Names::default())
+                .ok()
+                .and_then(|op| encode_on(cpu, &op, &|_| None));
+            let want = (!matches!(cpu, Cpu::M740 | Cpu::Mega45gs02)).then_some("0012");
+            assert_eq!(got.as_deref(), want, "{cpu:?} {source}");
+        }
+    }
+    // A signature not known until the link is written once it is.
+    let got = lowered("brk #sig", &Names::default())
+        .ok()
+        .and_then(|op| encode(&op, &|name| (name == "sig").then_some(0x34)));
+    assert_eq!(got.as_deref(), Some("0034"));
+    // An indirect signature is no signature.
+    assert!(lowered("brk ($12)", &Names::default()).is_err());
+}
+
+/// A `COP` without its signature byte is refused, where ca65 writes a lone
+/// `$02`: the 65816 takes the next byte as the signature anyway.
+#[test]
+fn cop_needs_its_signature() {
+    let profile = Profile::CA65_2_19_6502.with_cpu(Cpu::Wdc65816);
+    let Err(problem) = lowered_on(profile, "cop", &Names::default()) else {
+        panic!("a bare `cop` lowers")
+    };
+    assert!(problem.contains("signature byte"), "{problem}");
 }

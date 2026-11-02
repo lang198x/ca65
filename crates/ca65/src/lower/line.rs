@@ -196,6 +196,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
         known,
         label,
         widths,
+        cpu: line.cpu(),
     };
     let known: &dyn Known = &on_line;
     let mut scope = None;
@@ -324,6 +325,7 @@ struct OnLine<'a> {
     known: &'a dyn Known,
     label: Option<String>,
     widths: crate::Widths,
+    cpu: crate::Cpu,
 }
 
 impl OnLine<'_> {
@@ -363,6 +365,14 @@ impl Known for OnLine<'_> {
 
     fn widths(&self) -> crate::Widths {
         self.widths
+    }
+
+    fn cpu(&self) -> crate::Cpu {
+        self.cpu
+    }
+
+    fn time(&self) -> i64 {
+        self.known.time()
     }
 }
 

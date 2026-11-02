@@ -96,7 +96,7 @@ fn names_stay_as_written() {
 #[test]
 fn what_is_not_lowered_yet_says_so() {
     for (text, kind) in [
-        (".cpu", DiagnosticKind::Unsupported),
+        (".bank(1)", DiagnosticKind::Unsupported),
         (".defined(1)", DiagnosticKind::Invalid),
         (".strlen(\"ab\")", DiagnosticKind::Unsupported),
         ("\"A\"", DiagnosticKind::Invalid),
@@ -323,5 +323,92 @@ fn operands_take_the_size_ca65_studies() {
     ] {
         let lowered = expression(&immediate(text), &Placed).expect(text);
         assert_eq!(super::size(&lowered, &Placed), size, "{text}");
+    }
+}
+
+/// An assembler on the W65C02 at a fixed time, which knows a few names.
+struct Clock;
+
+impl Known for Clock {
+    fn name(&self, name: &str) -> Value {
+        match name {
+            "z" => Value::Address(Size::Zero),
+            "w" => Value::Opaque(Size::Absolute),
+            "far" => Value::Constant(0x12_3456),
+            "seg" => Value::Placed {
+                segment: 1,
+                offset: 0,
+                size: Size::Zero,
+            },
+            "m" => Value::Measured {
+                value: 2,
+                size: Size::Absolute,
+            },
+            _ => Value::Unknown,
+        }
+    }
+
+    fn pc(&self) -> Value {
+        Value::Unknown
+    }
+
+    fn cpu(&self) -> crate::Cpu {
+        crate::Cpu::Wdc65c02
+    }
+
+    fn time(&self) -> i64 {
+        1_700_000_000
+    }
+}
+
+/// `.addrsize`, `.cpu`, `.version` and `.time`, as ca65 V2.19 gives them.
+#[test]
+fn the_functions_that_describe_the_assembly() {
+    let value = |text: &str| -> Result<i64, String> {
+        let lowered = expression(&immediate(text), &Clock).map_err(|d| d.message().to_owned())?;
+        lowered
+            .eval_with(&|_| None, Some(0), 0)
+            .map_err(|e| e.message)
+    };
+    assert_eq!(value(".addrsize(z)"), Ok(1));
+    assert_eq!(value(".addrsize(w)"), Ok(2));
+    assert_eq!(value(".addrsize(far)"), Ok(3));
+    assert_eq!(value(".addrsize(seg)"), Ok(1));
+    assert_eq!(value(".addrsize(m)"), Ok(2));
+    assert_eq!(value(".cpu"), Ok(0x1032));
+    assert_eq!(value(".version"), Ok(0x0213));
+    assert_eq!(value(".time"), Ok(1_700_000_000));
+    // A name not defined above is ca65's error, and so is anything but a name.
+    assert!(value(".addrsize(later)").is_err_and(|e| e.contains("unknown symbol")));
+    assert!(value(".addrsize(1)").is_err_and(|e| e.contains("takes a name")));
+    // The defaults: the 6502, and the system clock.
+    let six = expression(&immediate(".cpu"), &Nothing).expect("lowers");
+    assert_eq!(six.eval_with(&|_| None, Some(0), 0).ok(), Some(0x0002));
+    let now = expression(&immediate(".time"), &Nothing).expect("lowers");
+    assert!(
+        now.eval_with(&|_| None, Some(0), 0)
+            .is_ok_and(|t| t > 1_700_000_000)
+    );
+}
+
+/// `.cpu` reports every CPU ca65 knows, as measured.
+#[test]
+fn every_cpu_has_its_mask() {
+    for (cpu, mask) in [
+        (crate::Cpu::Mos6502, 0x0002),
+        (crate::Cpu::Nmos6502X, 0x0006),
+        (crate::Cpu::Dtv6502, 0x000A),
+        (crate::Cpu::Mos65sc02, 0x0012),
+        (crate::Cpu::Mos65c02, 0x0032),
+        (crate::Cpu::Wdc65c02, 0x1032),
+        (crate::Cpu::Csg65ce02, 0x2022),
+        (crate::Cpu::Csg4510, 0x2422),
+        (crate::Cpu::Mega45gs02, 0x2C22),
+        (crate::Cpu::Wdc65816, 0x0052),
+        (crate::Cpu::HuC6280, 0x0132),
+        (crate::Cpu::M740, 0x0202),
+        (crate::Cpu::Sweet16, 0x0080),
+    ] {
+        assert_eq!(super::cpu_mask(cpu), mask, "{cpu:?}");
     }
 }
