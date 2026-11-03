@@ -5,6 +5,9 @@
 [shared syntax layer decision](https://github.com/lang198x/lang198x/blob/main/decisions/shared-syntax-layer.md)
 and 198x's
 [assembly source layer decision](https://github.com/stevehill1981/198x/blob/main/decisions/assembly-source-layer-moves-to-lang198x.md).
+**Follows:** Lang198x's proposed record on
+[settings that change how source is read](https://github.com/lang198x/lang198x/blob/main/decisions/reading-settings.md),
+which sets the rules here for every family. This plan is ca65's part of it.
 
 Some ca65 commands change how ca65 reads the lines after them:
 
@@ -95,10 +98,12 @@ register widths, and the host acts on them.
 3. **Keep UTF-8 only**, and refuse other files, as now.
 
 **Recommendation: option 1, through a new entry point.** `Expander::from_bytes`
-and a `Host::include_bytes` read bytes and decode them as Latin-1. The
-present `Expander::new(&str)` keeps reading text as it does now, so tools
-that hand over text, such as an editor, do not change. A listing can show
-the bytes back as UTF-8 when they are valid, since it has them.
+and a `Host::include_bytes` take bytes and decode them as Latin-1 with the
+shared decoder in `lang198x-syntax`, which the cross-language record adds
+and which keeps an offset map back to the bytes. The present
+`Expander::new(&str)` keeps reading text as it does now, so tools that hand
+over text, such as an editor, do not change. A listing can show the bytes
+back as UTF-8 when they are valid, since it has them.
 
 ## Settled, if this plan is agreed
 
@@ -133,7 +138,8 @@ on its own:
 3. **Parsing settings.** The four parser features.
 4. **Meaning settings.** The four meaning features in lowering and the
    walk, and `addrsize`'s warning.
-5. **Source bytes.** `Expander::from_bytes` and `Host::include_bytes`, and
+5. **Source bytes.** The shared Latin-1 decoder in `lang198x-syntax` first,
+   then `Expander::from_bytes` and `Host::include_bytes`, and
    Asm198x reading files as bytes.
 
 ## Risks
