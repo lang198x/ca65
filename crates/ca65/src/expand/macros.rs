@@ -120,8 +120,10 @@ impl Macro {
                 } else if matches!(token.kind(), kinds::IDENT | kinds::CHEAP_IDENT)
                     && let Some(index) = self.locals.iter().position(|l| l == token.text())
                 {
+                    // A cheap local keeps the local character it was
+                    // written with.
                     let cheap = if token.kind() == kinds::CHEAP_IDENT {
-                        "@"
+                        &token.text()[..1]
                     } else {
                         ""
                     };

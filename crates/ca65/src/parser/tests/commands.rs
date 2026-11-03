@@ -171,9 +171,8 @@ fn a_token_function_can_start_a_statement() {
 #[test]
 fn reading_options_are_not_supported_yet() {
     use lang198x_syntax::DiagnosticKind;
-    // `.case` reads like `.smart`; lowering refuses `.case off` as not
-    // lowered yet.
-    for command in [".feature c_comments", ".linecont +", ".localchar '?'"] {
+    // `.case` reads like `.smart`, and `.localchar` takes a value.
+    for command in [".feature c_comments", ".linecont +"] {
         assert_eq!(
             kinds_of(command),
             [DiagnosticKind::Unsupported],
@@ -181,6 +180,7 @@ fn reading_options_are_not_supported_yet() {
         );
     }
     assert!(problems(".feature c_comments")[0].contains("not supported yet"));
+    assert!(problems(".localchar '?'").is_empty());
 }
 
 #[test]

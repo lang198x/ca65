@@ -70,6 +70,9 @@ pub(super) trait Answers {
     /// Whether `name` is a mnemonic of the current CPU, in any case.
     fn is_mnemonic(&self, name: &str) -> bool;
 
+    /// The mode names are read in now, for a name `.ident` makes.
+    fn mode(&self) -> crate::Mode;
+
     /// The byte the character map makes of `character`, for `.strat`.
     fn translate(&mut self, character: u8) -> u8;
 }
@@ -439,7 +442,8 @@ impl Stream<'_> {
     /// The identifier `.ident` makes from the bytes of `name`.
     fn ident(&self, call: &Call, name: &[u8]) -> Result<Piece, Problem> {
         let name = String::from_utf8_lossy(name);
-        let rest = name.strip_prefix('@').unwrap_or(&name);
+        let mode = self.answers.mode();
+        let rest = name.strip_prefix(mode.local()).unwrap_or(&name);
         let mut chars = rest.chars();
         let valid = chars
             .next()
@@ -449,13 +453,14 @@ impl Stream<'_> {
             return Err(call.problem(format!("`{name}` is not a valid name for `.ident`")));
         }
         // The name is handed on as a name, not lexed again, so one spelt
-        // like a register stays a name, as in ca65.
-        let kind = if name.starts_with('@') {
+        // like a register stays a name, as in ca65. It is read as any name
+        // is, so in upper case after `.case off`.
+        let kind = if name.starts_with(mode.local()) {
             kinds::CHEAP_IDENT
         } else {
             kinds::IDENT
         };
-        Ok(call.made(name.into_owned(), kind))
+        Ok(call.made(mode.read_name(&name), kind))
     }
 
     /// `.string`'s argument: a name, perhaps scoped, or a number.

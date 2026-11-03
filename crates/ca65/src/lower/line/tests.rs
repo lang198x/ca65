@@ -1493,12 +1493,99 @@ fn a_procedure_may_name_its_size() {
 /// `.case on`, which a C compiler writes, is what ca65 does anyway.
 #[test]
 fn names_keep_their_case() {
-    for source in [".case on\n", ".case +\n", ".case\n", ".CASE ON\n"] {
+    for source in [
+        ".case on\n",
+        ".case +\n",
+        ".case\n",
+        ".CASE ON\n",
+        ".case off\n",
+    ] {
         assert!(first(source).is_ok(), "{source}");
     }
-    for source in [".case off\n", ".case -\n"] {
-        let problem = first(source).err().map(|d| d.kind());
-        assert_eq!(problem, Some(DiagnosticKind::Unsupported), "{source}");
+}
+
+/// Programs measured on ca65 V2.19 that change how names are read, with
+/// the bytes it wrote, or `None` if it refused the program.
+const READING: &[(&str, Option<&str>)] = &[
+    (".case off\nfoo = 1\n.byte FOO, Foo, foo\n", Some("010101")),
+    (
+        "Foo = 1\n.case off\n.byte .defined(FOO), .defined(Foo)\n",
+        Some("0000"),
+    ),
+    (".case off\nfoo = 1\n.case on\n.byte FOO\n", Some("01")),
+    (
+        ".case off\nfoo = 1\n.case on\n.byte .defined(foo), .defined(FOO)\n",
+        Some("0001"),
+    ),
+    (".case -\nab = 2\n.byte AB\n", Some("02")),
+    (
+        ".case off\n.macro m p\n.byte P\n.endmacro\nM 3\n",
+        Some("03"),
+    ),
+    (".macro m\n.byte 1\n.endmacro\n.case off\nm\n", None),
+    (".case off\n.define d 4\n.byte D\n", Some("04")),
+    (".case off\n.byte .strlen(.string(abc))\n", Some("03")),
+    (".case off\n.byte .xmatch(abc, ABC)\n", Some("01")),
+    (".case off\n.ident(\"abc\") = 5\n.byte ABC\n", Some("05")),
+    (".case off\n.byte \"ab\"\n", Some("6162")),
+    (".case off\nlab:\n@x: .byte <@X\n", Some("00")),
+    (".macro m\n.byte q\n.endmacro\nq = 6\n.case off\nm\n", None),
+    (
+        ".case off\n.macro m\n.byte q\n.endmacro\nQ = 7\n.case on\nM\n",
+        Some("07"),
+    ),
+    (".case 0\n", None),
+    (
+        ".case off\n.if 0\n.case on\n.endif\nfoo = 8\n.byte FOO\n",
+        Some("08"),
+    ),
+    (".localchar '?'\nlab:\n?x: .byte <?x\n", Some("00")),
+    (".localchar '?'\nlab:\n@x: .byte 1\n", None),
+    (".localchar '#'\n", None),
+    (".localchar \"?\"\n", None),
+    (".localchar\n", None),
+    (".localchar '?', 1\n", None),
+    (".localchar '?'\n?:\n.byte <?-\n", Some("00")),
+    (
+        ".localchar '?'\n.localchar '@'\nlab:\n@x: .byte <@x\n",
+        Some("00"),
+    ),
+    (".localchar '?'\n.ident(\"?x\") = 9\n.byte ?x\n", Some("09")),
+    (".localchar '?'\n.ident(\"@x\") = 9\n", None),
+    (
+        ".macro m\n.byte <?x\n.endmacro\n.localchar '?'\nlab:\n?x: m\n",
+        None,
+    ),
+    // A body keeps the local character it was read with.
+    (
+        ".localchar '?'\n.macro m\n.byte .defined(?x)\n.endmacro\n.localchar '@'\nlab:\n@x: m\n",
+        Some("00"),
+    ),
+    (
+        ".localchar '?'\nlab:\n?x:\n.macro m\n.byte .defined(?x)\n.endmacro\n.localchar '@'\nm\n",
+        Some("01"),
+    ),
+    (".localchar '?'\nlab:\n?x:\n@x: .byte 1\n", None),
+];
+
+#[test]
+fn reading_settings_match_ca65() {
+    for &(source, hex) in READING {
+        let got = assemble(source);
+        assert_eq!(got.as_deref().ok(), hex, "{source:?}: {got:?}");
+    }
+}
+
+#[test]
+fn localchar_says_what_is_wrong() {
+    for (source, message) in [
+        (".localchar '#'\n", "Invalid start character for locals"),
+        (".localchar \"?\"\n", "Expected a character constant"),
+        (".localchar\n", "Expected a character constant"),
+        (".localchar '?', 1\n", "Expected end-of-line"),
+    ] {
+        let problem = first(source).err().map(|d| d.message().to_owned());
+        assert_eq!(problem.as_deref(), Some(message), "{source}");
     }
 }
 
