@@ -37,8 +37,8 @@
 use std::collections::{HashMap, HashSet};
 
 use lang198x_syntax::{
-    Diagnostic, DiagnosticKind, ExpansionBuilder, ExpansionId, FileId, Origin, Provenance, Span,
-    SyntaxElement, SyntaxKind, SyntaxToken, TextId, TextRange, TextSize,
+    CharSet, Diagnostic, DiagnosticKind, ExpansionBuilder, ExpansionId, FileId, Origin, Provenance,
+    Span, SyntaxElement, SyntaxKind, SyntaxToken, TextId, TextRange, TextSize, decode,
 };
 
 use super::conditional::{Conditionals, Misfit};
@@ -151,6 +151,14 @@ pub trait Host {
     fn include(&mut self, name: &str, from: FileId) -> Option<String> {
         let _ = (name, from);
         None
+    }
+
+    /// The bytes of the file `.include` names, as for
+    /// [`include`](Self::include), for an expander that reads its source as
+    /// bytes, from [`Expander::from_bytes`]. The default gives the UTF-8
+    /// bytes of what `include` gives, which is how ca65 reads a UTF-8 file.
+    fn include_bytes(&mut self, name: &str, from: FileId) -> Option<Vec<u8>> {
+        self.include(name, from).map(String::into_bytes)
     }
 
     /// The text of the macro package `.macpack` names, such as `generic`,
@@ -324,7 +332,11 @@ impl ActiveLine {
             .iter()
             .find(|(at, _)| *at == token.text_range())
             .map(|(_, kept)| kept.bytes.clone());
-        Some(kept.unwrap_or_else(|| defines::unquoted(token.text()).as_bytes().to_vec()))
+        Some(
+            kept.unwrap_or_else(|| {
+                crate::quoted::unquoted_bytes(token.text(), self.mode.char_set())
+            }),
+        )
     }
 
     /// Returns which of a string token's bytes are raw, or `None` if
@@ -564,9 +576,86 @@ impl Expander {
     ///
     /// As for [`new`](Self::new).
     pub fn with_limits(text: &str, profile: Profile, limits: Limits) -> Result<Self, ParseError> {
+        Self::start(text, profile, limits, None)
+    }
+
+    /// Starts running `bytes`, the program's root file, under `profile`, as
+    /// ca65 reads source: as bytes. They are decoded as Latin-1, so every
+    /// byte is the character with the same number, and a string holds the
+    /// bytes it was written with, whatever they are. Files it includes are
+    /// read with [`Host::include_bytes`].
+    ///
+    /// ```
+    /// use lang198x_ca65::ast::{Expr, NameRef, View};
+    /// use lang198x_ca65::expand::{Expander, Host};
+    /// use lang198x_ca65::syntax::SyntaxElement;
+    /// use lang198x_ca65::{Profile, kinds};
+    ///
+    /// struct Nothing;
+    ///
+    /// impl Host for Nothing {
+    ///     fn evaluate(&mut self, _: &Expr) -> Result<i64, String> {
+    ///         Ok(0)
+    ///     }
+    ///     fn is_defined(&mut self, _: &NameRef) -> bool {
+    ///         false
+    ///     }
+    ///     fn is_referenced(&mut self, _: &NameRef) -> bool {
+    ///         false
+    ///     }
+    ///     fn is_constant(&mut self, _: &Expr) -> bool {
+    ///         true
+    ///     }
+    /// }
+    ///
+    /// // `é` in Latin-1 is the byte $E9, which is not UTF-8 on its own.
+    /// let mut expander = Expander::from_bytes(b".byte \"\xE9\"\n", Profile::CA65_2_19_6502)?;
+    /// let line = expander.next_line(&mut Nothing).expect("a line");
+    /// let string = line
+    ///     .line()
+    ///     .syntax()
+    ///     .descendants()
+    ///     .filter_map(SyntaxElement::into_token)
+    ///     .find(|token| token.kind() == kinds::STRING)
+    ///     .expect("a string");
+    /// assert_eq!(string.text(), "\"é\"");
+    /// assert_eq!(line.string(&string), Some(vec![0xE9]));
+    /// # Ok::<(), lang198x_ca65::ParseError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// As for [`new`](Self::new).
+    pub fn from_bytes(bytes: &[u8], profile: Profile) -> Result<Self, ParseError> {
+        Self::from_bytes_with_limits(bytes, profile, Limits::default())
+    }
+
+    /// Starts running `bytes` like [`from_bytes`](Self::from_bytes), within
+    /// `limits`.
+    ///
+    /// # Errors
+    ///
+    /// As for [`new`](Self::new).
+    pub fn from_bytes_with_limits(
+        bytes: &[u8],
+        profile: Profile,
+        limits: Limits,
+    ) -> Result<Self, ParseError> {
+        let decoded = decode(bytes, CharSet::Latin1).map_err(ParseError::Decode)?;
+        Self::start(decoded.text(), profile, limits, Some(CharSet::Latin1))
+    }
+
+    /// Starts running `text`, read from bytes in `char_set`, or given as
+    /// text with `None`.
+    fn start(
+        text: &str,
+        profile: Profile,
+        limits: Limits,
+        char_set: Option<CharSet>,
+    ) -> Result<Self, ParseError> {
         let mut expander = Self {
             profile,
-            mode: Mode::of(profile),
+            mode: Mode::of(profile).with_char_set(char_set),
             cpus: Vec::new(),
             widths: Widths::default(),
             smart: false,
@@ -592,7 +681,7 @@ impl Expander {
             finished: false,
             diagnostics: Vec::new(),
             carry: None,
-            strings: Strings::default(),
+            strings: Strings::reading(char_set),
             ran: Finished::default(),
             rest: None,
         };
@@ -964,7 +1053,7 @@ impl Expander {
                 }
                 kinds::STRING => {
                     let quote = spelt.chars().next().unwrap_or('"');
-                    let quoted = crate::quoted::string(spelt, quote, escapes);
+                    let quoted = crate::quoted::string(spelt, quote, escapes, self.mode.char_set());
                     builder.string(spelt, token.kind(), origin, quoted.bytes, quoted.raw);
                 }
                 kind => builder.push(spelt, kind, origin),
@@ -1273,10 +1362,13 @@ impl Expander {
             return;
         }
         let from = self.current_file();
-        let loaded = if word == ".include" {
-            host.include(&name, from)
-        } else {
-            host.package(&name)
+        let loaded = match (word, self.mode.char_set()) {
+            (".include", None) => host.include(&name, from),
+            (".include", Some(char_set)) => host
+                .include_bytes(&name, from)
+                .and_then(|bytes| decode(&bytes, char_set).ok())
+                .map(lang198x_syntax::Decoded::into_text),
+            _ => host.package(&name),
         };
         let Some(loaded) = loaded else {
             let message = if word == ".include" {

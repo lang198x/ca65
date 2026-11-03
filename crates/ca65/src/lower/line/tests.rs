@@ -176,8 +176,24 @@ fn pass_banked(
     finals: HashMap<String, i64>,
     bank: Option<i64>,
 ) -> Result<(Vec<u8>, Mini), String> {
+    let expander = Expander::new(source, Profile::CA65_2_19_6502).map_err(|e| e.to_string())?;
+    pass_with(expander, finals, bank)
+}
+
+/// One pass of a program read from bytes, as ca65 reads it.
+fn pass_bytes(source: &[u8], finals: HashMap<String, i64>) -> Result<(Vec<u8>, Mini), String> {
+    let expander =
+        Expander::from_bytes(source, Profile::CA65_2_19_6502).map_err(|e| e.to_string())?;
+    pass_with(expander, finals, None)
+}
+
+/// One pass of the program `expander` runs.
+fn pass_with(
+    mut expander: Expander,
+    finals: HashMap<String, i64>,
+    bank: Option<i64>,
+) -> Result<(Vec<u8>, Mini), String> {
     let profile = Profile::CA65_2_19_6502;
-    let mut expander = Expander::new(source, profile).map_err(|e| e.to_string())?;
     let mut mini = Mini {
         finals,
         bank,
@@ -319,6 +335,13 @@ fn emit(op: &Operation, mini: &mut Mini, bytes: &mut Vec<u8>) -> Result<(), Stri
     }
     mini.pc = next_pc(op, mini.pc, &isa198x::mos6502::SET, None, 1, 0).map_err(|e| e.message)?;
     Ok(())
+}
+
+/// `source`, read from bytes and assembled in two passes, as hex.
+fn assemble_bytes(source: &[u8]) -> Result<String, String> {
+    let (_, first) = pass_bytes(source, HashMap::new())?;
+    let (bytes, _) = pass_bytes(source, first.finals)?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// `source`, assembled in two passes, as hex.
@@ -2267,6 +2290,72 @@ fn addrsize_is_deprecated() {
     }
     let lowered = first(".feature force_range\n").expect("accepted");
     assert!(lowered.items.iter().all(|item| item.op.is_none()));
+}
+
+/// Programs measured on ca65 V2.19 as bytes, some of them not UTF-8, with
+/// the bytes it wrote, or `None` if it refused the program. ca65 copies a
+/// string's bytes as they are, so `é` is $E9 in a Latin-1 file and $C3 $A9
+/// in a UTF-8 one, and a byte past ASCII outside a string or a comment is
+/// an invalid input character.
+const BYTES: &[(&[u8], Option<&str>)] = &[
+    (b".byte \"\xe9\"\n", Some("e9")),
+    (b".byte \"\xc3\xa9\"\n", Some("c3a9")),
+    (b".byte '\xe9'\n", Some("e9")),
+    (b".byte '\xc3\xa9'\n", None),
+    (b".byte 1 ; \xe9\xff\n", Some("01")),
+    (b".byte 1 \xe9\n", None),
+    (b"l\xe9: nop\n", None),
+    (b".byte \"\x80\"\n", Some("80")),
+    (b".charmap $e9, $41\n.byte \"\xe9\", '\xe9'\n", Some("4141")),
+    (b".byte .strlen(\"\xe9\xe8\")\n", Some("02")),
+    (b".byte .strlen(\"\xc3\xa9\")\n", Some("02")),
+    (b".byte .strlen(\"\xe9\")\n", Some("01")),
+    (b".byte .strat(\"\xe9\", 0)\n", Some("e9")),
+    (
+        b".feature string_escapes\n.byte \"\xe9\\x41\"\n",
+        Some("e941"),
+    ),
+    (b".define s \"\xe9\"\n.byte s\n", Some("e9")),
+    (b".macro m v\n.byte v\n.endmacro\nm \"\xe9\"\n", Some("e9")),
+    (b".byte .sprintf(\"%s\xe9\", \"\xe8\")\n", Some("e8e9")),
+    (b".byte .concat(\"\xe9\", \"\xe8\")\n", Some("e9e8")),
+    (b".feature loose_string_term\n.byte '\xe9'\n", Some("e9")),
+    (b"nop\r\n.byte \"\xe9\"\r\n", Some("eae9")),
+    (b".byte '\x7f', '\x1b'\n", Some("7f1b")),
+    (b".byte '\x00'\n", None),
+    // A UTF-8 byte order mark is three bytes past ASCII.
+    (b"\xef\xbb\xbf.byte 1\n", None),
+    // ca65 V2.19 reads $FF as the end of the file and refuses this with
+    // `Newline in string constant`; here it is a byte: see `quoted`.
+    (b".byte \"a\xffb\", 1\n", Some("61ff6201")),
+];
+
+#[test]
+fn source_bytes_match_ca65() {
+    for &(source, hex) in BYTES {
+        let got = assemble_bytes(source);
+        assert_eq!(
+            got.as_deref().ok(),
+            hex,
+            "{:?}: {got:?}",
+            String::from_utf8_lossy(source)
+        );
+    }
+}
+
+/// Text holds each character as its UTF-8 bytes, which is how ca65 reads a
+/// UTF-8 file, so text and its UTF-8 bytes assemble alike.
+#[test]
+fn text_reads_as_its_utf8_bytes() {
+    for text in [
+        ".byte \"é\"\n",
+        ".byte .strlen(\"é\")\n",
+        ".define s \"é\"\n.byte s\n",
+    ] {
+        assert_eq!(assemble(text), assemble_bytes(text.as_bytes()), "{text}");
+    }
+    assert_eq!(assemble(".byte \"é\"\n").as_deref(), Ok("c3a9"));
+    assert!(assemble(".byte 'é'\n").is_err());
 }
 
 #[test]

@@ -864,6 +864,10 @@ impl Known for Defaulted<'_> {
         self.0.has_feature(feature)
     }
 
+    fn char_set(&self) -> Option<lang198x_syntax::CharSet> {
+        self.0.char_set()
+    }
+
     fn string(&self, token: &lang198x_syntax::SyntaxToken) -> Option<(Vec<u8>, Vec<bool>)> {
         self.0.string(token)
     }

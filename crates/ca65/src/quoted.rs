@@ -4,6 +4,18 @@
 //! The lexer uses this to find where a quoted token ends, the expander to
 //! keep the bytes a string holds when escapes change them, and lowering to
 //! read a character constant. One reader serves all three, so they agree.
+//!
+//! Source read from Latin-1 bytes holds each byte as the character with the
+//! same number, so a string's character up to U+00FF is that one byte, as
+//! ca65 copies it. Source given as text holds each character as its UTF-8
+//! bytes.
+//!
+//! ca65 V2.19's scanner reads the byte $FF as the end of the file, since it
+//! keeps characters in a signed `char`, so a string holding one ends there
+//! with `Newline in string constant`. Here $FF is a byte like any other: a
+//! named divergence.
+
+use lang198x_syntax::CharSet;
 
 /// A quoted constant read from the start of some text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,10 +40,33 @@ pub(crate) fn unquoted(text: &str) -> &str {
     text.strip_suffix(quote).unwrap_or(text)
 }
 
+/// The bytes a string token spelt `text` holds when it has no escapes:
+/// the text between its quotes, read in `char_set`.
+pub(crate) fn unquoted_bytes(text: &str, char_set: Option<CharSet>) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for c in unquoted(text).chars() {
+        push(c, char_set, &mut bytes);
+    }
+    bytes
+}
+
+/// Adds the bytes `c` was read from to `bytes`: one, for a character up to
+/// U+00FF of Latin-1 source, or its UTF-8 bytes.
+fn push(c: char, char_set: Option<CharSet>, bytes: &mut Vec<u8>) {
+    match (char_set, u8::try_from(c)) {
+        (Some(CharSet::Latin1), Ok(byte)) => bytes.push(byte),
+        _ => {
+            let mut buffer = [0; 4];
+            bytes.extend_from_slice(c.encode_utf8(&mut buffer).as_bytes());
+        }
+    }
+}
+
 /// The string at the start of `rest`, from its opening quote `term` to the
 /// next one. With `escapes`, a backslash starts an escape. A string the
-/// line ends inside stops there, and says so.
-pub(crate) fn string(rest: &str, term: char, escapes: bool) -> Quoted {
+/// line ends inside stops there, and says so. Its characters are read in
+/// `char_set`.
+pub(crate) fn string(rest: &str, term: char, escapes: bool, char_set: Option<CharSet>) -> Quoted {
     let mut quoted = Quoted {
         len: term.len_utf8(),
         bytes: Vec::new(),
@@ -59,11 +94,8 @@ pub(crate) fn string(rest: &str, term: char, escapes: bool) -> Quoted {
             continue;
         }
         quoted.len += c.len_utf8();
-        let mut buffer = [0; 4];
-        for &byte in c.encode_utf8(&mut buffer).as_bytes() {
-            quoted.bytes.push(byte);
-            quoted.raw.push(false);
-        }
+        push(c, char_set, &mut quoted.bytes);
+        quoted.raw.resize(quoted.bytes.len(), false);
     }
 }
 
@@ -75,7 +107,12 @@ pub(crate) fn string(rest: &str, term: char, escapes: bool) -> Quoted {
 /// means it to be, by a comment in `ReadStringConst`, but its special case
 /// overwrites the character it then checks, so ca65 refuses it as an
 /// illegal character constant. This follows the intent: a named divergence.
-pub(crate) fn character(rest: &str, escapes: bool, missing_term: bool) -> Quoted {
+pub(crate) fn character(
+    rest: &str,
+    escapes: bool,
+    missing_term: bool,
+    char_set: Option<CharSet>,
+) -> Quoted {
     let mut quoted = Quoted {
         len: 1,
         bytes: Vec::new(),
@@ -104,10 +141,7 @@ pub(crate) fn character(rest: &str, escapes: bool, missing_term: bool) -> Quoted
         }
         Some(c) => {
             quoted.len += c.len_utf8();
-            let mut buffer = [0; 4];
-            quoted
-                .bytes
-                .extend_from_slice(c.encode_utf8(&mut buffer).as_bytes());
+            push(c, char_set, &mut quoted.bytes);
             quoted.raw.resize(quoted.bytes.len(), false);
         }
     }

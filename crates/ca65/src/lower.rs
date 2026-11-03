@@ -204,6 +204,14 @@ pub trait Known {
         false
     }
 
+    /// The character set the line's source was read from as bytes, or
+    /// `None` if it was given as text. In Latin-1 source, a character in a
+    /// string or a character constant is the one byte it was read from.
+    /// Lowering a line answers this from the line; the default is text.
+    fn char_set(&self) -> Option<lang198x_syntax::CharSet> {
+        None
+    }
+
     /// Whether `.smart` is on for the line. Lowering a line answers this
     /// from the line; the default is off.
     fn smart(&self) -> bool {

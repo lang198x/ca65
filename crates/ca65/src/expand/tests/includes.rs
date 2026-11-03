@@ -179,3 +179,81 @@ fn an_included_line_that_is_expanded_says_it_was_included() {
     assert_eq!(from.text(), TextId::File(lang198x_syntax::FileId::new(1)));
     assert_eq!(site.range().start().get(), 12);
 }
+
+/// A host whose files are bytes, or text if `text` is set, which reads
+/// them only through `include` and leaves `include_bytes` to its default.
+struct ByteFiles {
+    files: Vec<(&'static str, &'static [u8])>,
+    text: bool,
+}
+
+impl crate::expand::Host for ByteFiles {
+    fn evaluate(&mut self, _: &crate::ast::Expr) -> Result<i64, String> {
+        Ok(0)
+    }
+    fn is_defined(&mut self, _: &crate::ast::NameRef) -> bool {
+        false
+    }
+    fn is_referenced(&mut self, _: &crate::ast::NameRef) -> bool {
+        false
+    }
+    fn is_constant(&mut self, _: &crate::ast::Expr) -> bool {
+        true
+    }
+    fn include(&mut self, name: &str, _: lang198x_syntax::FileId) -> Option<String> {
+        let (_, bytes) = self.files.iter().find(|(n, _)| *n == name)?;
+        self.text.then(|| String::from_utf8(bytes.to_vec()).ok())?
+    }
+    fn include_bytes(&mut self, name: &str, from: lang198x_syntax::FileId) -> Option<Vec<u8>> {
+        if self.text {
+            return self.include(name, from).map(String::into_bytes);
+        }
+        let (_, bytes) = self.files.iter().find(|(n, _)| *n == name)?;
+        Some(bytes.to_vec())
+    }
+}
+
+/// The bytes of each string on the lines `source` runs, read from bytes.
+fn strings_read(source: &[u8], host: &mut ByteFiles) -> Vec<Vec<u8>> {
+    let mut expander = Expander::from_bytes(source, Profile::CA65_2_19_6502).expect("reads");
+    let mut found = Vec::new();
+    while let Some(line) = expander.next_line(host) {
+        for token in line
+            .line()
+            .syntax()
+            .descendants()
+            .filter_map(lang198x_syntax::SyntaxElement::into_token)
+        {
+            found.extend(line.string(&token));
+        }
+    }
+    assert!(
+        expander.diagnostics().is_empty(),
+        "{:?}",
+        expander.diagnostics()
+    );
+    found
+}
+
+/// A file read from bytes includes files as bytes, so a Latin-1 file holds
+/// its bytes. A host that has only text gives its UTF-8 bytes, which is how
+/// ca65 reads a UTF-8 file.
+#[test]
+fn included_files_are_read_as_bytes() {
+    let mut latin1 = ByteFiles {
+        files: vec![("l.inc", b".byte \"\xe9\"\n")],
+        text: false,
+    };
+    assert_eq!(
+        strings_read(b".include \"l.inc\"\n.byte \"\xe8\"\n", &mut latin1),
+        [vec![0xE9], vec![0xE8]]
+    );
+    let mut text = ByteFiles {
+        files: vec![("u.inc", ".byte \"é\"\n".as_bytes())],
+        text: true,
+    };
+    assert_eq!(
+        strings_read(b".include \"u.inc\"\n", &mut text),
+        [vec![0xC3, 0xA9]]
+    );
+}

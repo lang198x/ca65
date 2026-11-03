@@ -462,6 +462,13 @@ impl Known for OnLine<'_> {
         }
     }
 
+    fn char_set(&self) -> Option<lang198x_syntax::CharSet> {
+        match self.line {
+            Some(line) => line.mode().char_set(),
+            None => self.known.char_set(),
+        }
+    }
+
     fn smart(&self) -> bool {
         match self.line {
             Some(line) => line.smart(),

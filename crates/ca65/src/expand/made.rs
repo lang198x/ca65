@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use lang198x_syntax::{
-    ExpansionBuilder, Origin, Span, SyntaxKind, SyntaxToken, TextId, TextRange, TextSize,
+    CharSet, ExpansionBuilder, Origin, Span, SyntaxKind, SyntaxToken, TextId, TextRange, TextSize,
 };
 
 use super::defines::Piece;
@@ -48,40 +48,63 @@ impl Kept {
 pub(super) type MadeStrings = Vec<(TextRange, Kept)>;
 
 /// What is kept of each made string whose text cannot hold it, by where
-/// its token is.
+/// its token is, and the character set the source was read from.
 #[derive(Debug, Default)]
-pub(super) struct Strings(HashMap<Span, Kept>);
+pub(super) struct Strings {
+    kept: HashMap<Span, Kept>,
+    char_set: Option<CharSet>,
+}
 
 impl Strings {
+    /// Strings for source read in `char_set`, or given as text.
+    pub(super) fn reading(char_set: Option<CharSet>) -> Self {
+        Self {
+            kept: HashMap::new(),
+            char_set,
+        }
+    }
+
     /// The bytes of the made string at `at`, if it is one.
     pub(super) fn get(&self, at: Span) -> Option<&[u8]> {
-        self.0.get(&at).map(|kept| kept.bytes.as_slice())
+        self.kept.get(&at).map(|kept| kept.bytes.as_slice())
     }
 
     /// A piece copied from `token`, at `site`, keeping what is kept of a
-    /// made string.
+    /// made string. A string read from Latin-1 source keeps the bytes its
+    /// characters were read from.
     pub(super) fn piece(&self, token: &SyntaxToken, origin: Origin, site: Span) -> Piece {
         let mut piece = Piece::new(token, origin, site);
-        if token.kind() == kinds::STRING
-            && let Some(kept) = self.0.get(&site)
-        {
-            piece.bytes = Some(kept.bytes.clone());
-            piece.raw = Some(kept.raw.clone());
+        if let Some(kept) = self.of(token, site) {
+            piece.bytes = Some(kept.bytes);
+            piece.raw = Some(kept.raw);
         }
         piece
+    }
+
+    /// What is kept of the string `token` at `site`: what a made string
+    /// keeps, or the bytes the characters of one read from Latin-1 source
+    /// were read from. `None` if its text alone gives its bytes.
+    fn of(&self, token: &SyntaxToken, site: Span) -> Option<Kept> {
+        if token.kind() != kinds::STRING {
+            return None;
+        }
+        self.kept.get(&site).cloned().or_else(|| {
+            let bytes = crate::quoted::unquoted_bytes(token.text(), self.char_set);
+            Kept::of(token.text(), &bytes, None)
+        })
     }
 
     /// Keeps the bytes of each made string in an expansion just added as
     /// `text`.
     pub(super) fn add(&mut self, text: TextId, strings: MadeStrings) {
         for (range, kept) in strings {
-            self.0.insert(Span::new(text, range), kept);
+            self.kept.insert(Span::new(text, range), kept);
         }
     }
 
     /// The made strings in `text`, with their ranges in it.
     pub(super) fn in_text(&self, text: TextId) -> MadeStrings {
-        self.0
+        self.kept
             .iter()
             .filter(|(at, _)| at.text() == text)
             .map(|(at, kept)| (at.range(), kept.clone()))
@@ -139,12 +162,7 @@ impl Made {
         origin: Origin,
         strings: &Strings,
     ) {
-        self.push_bytes(
-            token.text(),
-            token.kind(),
-            origin,
-            strings.0.get(&from).cloned(),
-        );
+        self.push_bytes(token.text(), token.kind(), origin, strings.of(token, from));
     }
 
     /// Adds a string token, spelt `text`, holding `bytes` with `raw`

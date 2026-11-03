@@ -64,6 +64,9 @@ pub enum ParseError {
     Build(BuildError),
     /// A diagnostic did not fit the text. This is a bug in this crate.
     Diagnostic(DiagnosticOutsideText),
+    /// Source bytes could not be decoded: the text would be longer than
+    /// 4 GiB.
+    Decode(lang198x_syntax::DecodeError),
 }
 
 impl fmt::Display for ParseError {
@@ -71,6 +74,7 @@ impl fmt::Display for ParseError {
         match self {
             Self::Build(error) => write!(f, "the syntax tree could not be built: {error}"),
             Self::Diagnostic(error) => write!(f, "a diagnostic did not fit the text: {error:?}"),
+            Self::Decode(error) => write!(f, "the source could not be decoded: {error}"),
         }
     }
 }
