@@ -3,6 +3,9 @@
 /// The value of a number as ca65 writes it: `$hex`, `%binary`, decimal, or
 /// hex ending in `h`. ca65 keeps 32 bits.
 pub(crate) fn value(text: &str) -> Option<i64> {
+    // `underline_in_numbers` lets `_` group the digits; it adds nothing.
+    let text = text.replace('_', "");
+    let text = text.as_str();
     let (digits, radix) = if let Some(hex) = text.strip_prefix('$') {
         (hex, 16)
     } else if let Some(binary) = text.strip_prefix('%') {

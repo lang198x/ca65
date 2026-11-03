@@ -328,6 +328,8 @@ pub struct Mode {
     cpu: Cpu,
     folded: bool,
     local: char,
+    /// One bit for each [`Feature`] that is on.
+    features: u32,
 }
 
 impl Mode {
@@ -339,6 +341,7 @@ impl Mode {
             cpu: profile.cpu,
             folded: false,
             local: '@',
+            features: 0,
         }
     }
 
@@ -383,15 +386,149 @@ impl Mode {
         }
     }
 
+    /// Whether `feature` is on.
+    #[must_use]
+    pub const fn has(self, feature: Feature) -> bool {
+        self.features & feature.bit() != 0
+    }
+
+    /// This mode, with `feature` on or off.
+    #[must_use]
+    pub const fn with_feature(self, feature: Feature, on: bool) -> Self {
+        let features = if on {
+            self.features | feature.bit()
+        } else {
+            self.features & !feature.bit()
+        };
+        Self { features, ..self }
+    }
+
     /// `name` as it is read in this mode: in upper case after `.case off`.
-    /// ca65 changes only ASCII letters.
+    /// A name that starts with a dot, which `leading_dot_in_identifiers`
+    /// allows, is always in upper case, since ca65 first looks it up as a
+    /// command, and commands ignore case. ca65 changes only ASCII letters.
     #[must_use]
     pub fn read_name(self, name: &str) -> String {
-        if self.folded {
+        if self.folded || name.starts_with('.') {
             name.to_ascii_uppercase()
         } else {
             name.to_owned()
         }
+    }
+
+    /// Whether a name may be spelt differently from how this mode reads
+    /// it, so a line must be read again to get its names right.
+    pub(crate) const fn renames(self) -> bool {
+        self.folded || self.has(Feature::LeadingDotInIdentifiers)
+    }
+}
+
+/// A compatibility feature that `.feature` turns on or off, as ca65 V2.19
+/// names them. They all start off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Feature {
+    /// `@` may appear in a name after its first character.
+    AtInIdentifiers,
+    /// Square brackets mark indirect addressing, like parentheses.
+    BracketAsIndirect,
+    /// `/*` and `*/` enclose a comment.
+    CComments,
+    /// `$` may appear in a name after its first character.
+    DollarInIdentifiers,
+    /// `$` on its own is the current address, like `*`.
+    DollarIsPc,
+    /// Values are cut to fit where they go, without a range error.
+    ForceRange,
+    /// A name at the start of a line is a label without a colon.
+    LabelsWithoutColons,
+    /// A name may start with a dot, if it is not one of ca65's commands.
+    LeadingDotInIdentifiers,
+    /// A backslash at the end of a line joins it to the next.
+    LineContinuations,
+    /// On the 65816, `jsr`, `jmp` and `rts` may be long.
+    LongJsrJmpRts,
+    /// A character constant may end with `"`.
+    LooseCharTerm,
+    /// A string may be enclosed in single quotes.
+    LooseStringTerm,
+    /// A named `.scope` may be opened again.
+    MergeScopes,
+    /// A character constant may leave off its closing quote.
+    MissingCharTerm,
+    /// `.org` and `.reloc` act on the current segment only.
+    OrgPerSeg,
+    /// The current address may be assigned to, like `.org`.
+    PcAssignment,
+    /// A backslash in a string starts an escape, as in C.
+    StringEscapes,
+    /// Instruction names may name macros and symbols.
+    UbiquitousIdents,
+    /// `_` may group the digits of a number.
+    UnderlineInNumbers,
+}
+
+impl Feature {
+    /// Every feature, in ca65's order.
+    pub const ALL: [Self; 19] = [
+        Self::AtInIdentifiers,
+        Self::BracketAsIndirect,
+        Self::CComments,
+        Self::DollarInIdentifiers,
+        Self::DollarIsPc,
+        Self::ForceRange,
+        Self::LabelsWithoutColons,
+        Self::LeadingDotInIdentifiers,
+        Self::LineContinuations,
+        Self::LongJsrJmpRts,
+        Self::LooseCharTerm,
+        Self::LooseStringTerm,
+        Self::MergeScopes,
+        Self::MissingCharTerm,
+        Self::OrgPerSeg,
+        Self::PcAssignment,
+        Self::StringEscapes,
+        Self::UbiquitousIdents,
+        Self::UnderlineInNumbers,
+    ];
+
+    /// The feature's name, as `.feature` takes it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::AtInIdentifiers => "at_in_identifiers",
+            Self::BracketAsIndirect => "bracket_as_indirect",
+            Self::CComments => "c_comments",
+            Self::DollarInIdentifiers => "dollar_in_identifiers",
+            Self::DollarIsPc => "dollar_is_pc",
+            Self::ForceRange => "force_range",
+            Self::LabelsWithoutColons => "labels_without_colons",
+            Self::LeadingDotInIdentifiers => "leading_dot_in_identifiers",
+            Self::LineContinuations => "line_continuations",
+            Self::LongJsrJmpRts => "long_jsr_jmp_rts",
+            Self::LooseCharTerm => "loose_char_term",
+            Self::LooseStringTerm => "loose_string_term",
+            Self::MergeScopes => "merge_scopes",
+            Self::MissingCharTerm => "missing_char_term",
+            Self::OrgPerSeg => "org_per_seg",
+            Self::PcAssignment => "pc_assignment",
+            Self::StringEscapes => "string_escapes",
+            Self::UbiquitousIdents => "ubiquitous_idents",
+            Self::UnderlineInNumbers => "underline_in_numbers",
+        }
+    }
+
+    /// The feature `name` names, in any case, or `None` if ca65 has none
+    /// by that name.
+    #[must_use]
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|feature| feature.name().eq_ignore_ascii_case(name))
+    }
+
+    const fn bit(self) -> u32 {
+        1 << self as u32
     }
 }
 
@@ -430,6 +567,31 @@ mod tests {
         let question = mode.with_local('?');
         assert_eq!(question.map(Mode::local), Some('?'));
         assert_eq!(mode.with_local('#'), None);
+    }
+
+    #[test]
+    fn features_start_off_and_switch_one_at_a_time() {
+        let mode = Mode::of(Profile::CA65_2_19_6502);
+        assert!(Feature::ALL.into_iter().all(|feature| !mode.has(feature)));
+        let on = mode.with_feature(Feature::DollarIsPc, true);
+        assert!(on.has(Feature::DollarIsPc));
+        assert!(!on.has(Feature::AtInIdentifiers));
+        assert!(
+            !on.with_feature(Feature::DollarIsPc, false)
+                .has(Feature::DollarIsPc)
+        );
+        for feature in Feature::ALL {
+            assert_eq!(
+                Feature::named(&feature.name().to_uppercase()),
+                Some(feature)
+            );
+        }
+        assert_eq!(Feature::named("addrsize"), None);
+        assert_eq!(mode.read_name(".foo"), ".FOO");
+        assert!(
+            mode.with_feature(Feature::LeadingDotInIdentifiers, true)
+                .renames()
+        );
     }
 
     #[test]

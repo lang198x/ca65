@@ -32,7 +32,7 @@
 
 use lang198x_syntax::{Diagnostic, DiagnosticKind, SyntaxKind, TextRange, TextSize};
 
-use crate::{Mode, is_control_command, kinds};
+use crate::{Feature, Mode, is_control_command, kinds};
 
 /// One token: its kind and how many bytes of text it covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -161,16 +161,23 @@ impl<'t> Lexer<'t> {
                 (SyntaxKind::WHITESPACE, len)
             }
             ';' => (SyntaxKind::COMMENT, line_rest(rest)),
-            '$' => (kinds::NUMBER, self.prefixed(rest, 16)),
-            '%' => (kinds::NUMBER, self.prefixed(rest, 2)),
-            '0'..='9' => (kinds::NUMBER, self.digit_led(rest)),
-            '.' => self.dotted(rest),
+            // With `dollar_is_pc`, a `$` that no hexadecimal digit follows
+            // is the current address.
+            '$' if mode.has(Feature::DollarIsPc)
+                && !rest[1..].starts_with(|c: char| c.is_ascii_hexdigit()) =>
+            {
+                (kinds::DOLLAR, 1)
+            }
+            '$' => (kinds::NUMBER, self.prefixed(rest, 16, mode)),
+            '%' => (kinds::NUMBER, self.prefixed(rest, 2, mode)),
+            '0'..='9' => (kinds::NUMBER, self.digit_led(rest, mode)),
+            '.' => self.dotted(rest, mode),
             // ca65 reads `@` as SWEET 16's indirect mark before it looks
             // for a cheap local name.
             '@' if mode.cpu() == crate::Cpu::Sweet16 => (kinds::AT, 1),
             // `.localchar` chooses which of `@` and `?` starts a cheap local
             // or an unnamed label. The other is not allowed anywhere.
-            c if c == mode.local() => at(rest),
+            c if c == mode.local() => at(rest, mode),
             '\'' => (kinds::CHAR, self.character(rest)),
             '"' => (kinds::STRING, self.string(rest)),
             ':' => colon(rest),
@@ -203,21 +210,30 @@ impl<'t> Lexer<'t> {
     }
 
     /// A number after `$` or `%`. The prefix needs at least one digit of its
-    /// base; on its own it is still a number, and is reported.
-    fn prefixed(&mut self, rest: &str, radix: u32) -> usize {
+    /// base; on its own it is still a number, and is reported. With
+    /// `underline_in_numbers`, `_` may come between the digits.
+    fn prefixed(&mut self, rest: &str, radix: u32, mode: Mode) -> usize {
         let digits = &rest[1..];
-        let run = digits
-            .find(|c: char| !c.is_digit(radix))
-            .unwrap_or(digits.len());
+        let underline = mode.has(Feature::UnderlineInNumbers);
+        let run = if digits.starts_with(|c: char| c.is_digit(radix)) {
+            digits
+                .find(|c: char| !(c.is_digit(radix) || (underline && c == '_')))
+                .unwrap_or(digits.len())
+        } else {
+            0
+        };
         let len = 1 + run;
         let base = if radix == 16 { "hexadecimal" } else { "binary" };
         if run == 0 {
             self.report(len, format!("a {base} digit must follow `{}`", &rest[..1]));
+        } else if digits[..run].ends_with('_') {
+            self.report(len, "a number may not end with `_`".into());
         } else {
+            let digits = &digits[..run].replace('_', "");
             // ca65 keeps 32 bits, so a number overflows once it has more
             // significant digits than that holds. Leading zeros are free.
             let limit = if radix == 16 { 8 } else { 32 };
-            if digits[..run].trim_start_matches('0').len() > limit {
+            if digits.trim_start_matches('0').len() > limit {
                 self.report(len, format!("`{}` overflows 32 bits", &rest[..len]));
             }
         }
@@ -226,26 +242,37 @@ impl<'t> Lexer<'t> {
 
     /// A run that starts with a digit. It takes every hexadecimal digit that
     /// follows, then an `h` if there is one, as ca65's scanner does, and is
-    /// reported if its digits do not suit its base.
-    fn digit_led(&mut self, rest: &str) -> usize {
+    /// reported if its digits do not suit its base. With
+    /// `underline_in_numbers`, `_` may come between the digits.
+    fn digit_led(&mut self, rest: &str, mode: Mode) -> usize {
+        let underline = mode.has(Feature::UnderlineInNumbers);
         let run = rest
-            .find(|c: char| !c.is_ascii_hexdigit())
+            .find(|c: char| !(c.is_ascii_hexdigit() || (underline && c == '_')))
             .unwrap_or(rest.len());
         let hex = rest[run..].starts_with(['h', 'H']);
         let len = run + usize::from(hex);
-        if let Err(problem) = digit_led_value(&rest[..run], if hex { 16 } else { 10 }) {
+        if rest[..run].ends_with('_') {
+            self.report(len, "a number may not end with `_`".into());
+        } else if let Err(problem) =
+            digit_led_value(&rest[..run].replace('_', ""), if hex { 16 } else { 10 })
+        {
             self.report(len, format!("`{}` {problem}", &rest[..len]));
         }
         len
     }
 
-    /// A word starting with a dot, or a dot on its own.
-    fn dotted(&mut self, rest: &str) -> (SyntaxKind, usize) {
+    /// A word starting with a dot, or a dot on its own. With
+    /// `leading_dot_in_identifiers`, a word that is not one of ca65's
+    /// commands is a name.
+    fn dotted(&mut self, rest: &str, mode: Mode) -> (SyntaxKind, usize) {
         if !rest[1..].starts_with(|c: char| starts_name(c)) {
             return (kinds::DOT, 1);
         }
-        let len = 1 + name_len(&rest[1..]);
+        let len = 1 + word_len(&rest[1..]);
         let word = &rest[..len];
+        if !is_control_command(word) && mode.has(Feature::LeadingDotInIdentifiers) {
+            return (kinds::IDENT, 1 + name_len(&rest[1..], mode));
+        }
         if !is_control_command(word) {
             self.report(len, format!("`{word}` is not a control command ca65 knows"));
         }
@@ -312,15 +339,27 @@ fn starts_name(c: char) -> bool {
     c.is_ascii_alphabetic() || c == '_'
 }
 
-/// The length of the name at the start of `rest`: letters, digits and `_`.
-fn name_len(rest: &str) -> usize {
+/// The length of the word at the start of `rest`: letters, digits and `_`.
+fn word_len(rest: &str) -> usize {
     rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
         .unwrap_or(rest.len())
 }
 
+/// The length of the name at the start of `rest`: letters, digits and `_`,
+/// and `@` or `$` where `at_in_identifiers` or `dollar_in_identifiers`
+/// allows them.
+fn name_len(rest: &str, mode: Mode) -> usize {
+    let at = mode.has(Feature::AtInIdentifiers);
+    let dollar = mode.has(Feature::DollarInIdentifiers);
+    rest.find(|c: char| {
+        !(c.is_ascii_alphanumeric() || c == '_' || (at && c == '@') || (dollar && c == '$'))
+    })
+    .unwrap_or(rest.len())
+}
+
 /// A name, which may be a register of the mode's CPU or an address size.
 fn name(rest: &str, mode: Mode) -> (SyntaxKind, usize) {
-    let len = name_len(rest);
+    let len = name_len(rest, mode);
     let word = &rest[..len];
     // A one-letter `a`, `f` or `z` with a colon right after it is an address
     // size; with a space before the colon, it is not.
@@ -344,10 +383,10 @@ fn name(rest: &str, mode: Mode) -> (SyntaxKind, usize) {
 
 /// After the local character, `@` or `?`: a cheap local name, or, with no
 /// name, an unnamed label reference such as `@-`.
-fn at(rest: &str) -> (SyntaxKind, usize) {
+fn at(rest: &str, mode: Mode) -> (SyntaxKind, usize) {
     let after = &rest[1..];
     if after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
-        (kinds::CHEAP_IDENT, 1 + name_len(after))
+        (kinds::CHEAP_IDENT, 1 + name_len(after, mode))
     } else {
         (kinds::UNNAMED, 1 + direction_run(after))
     }

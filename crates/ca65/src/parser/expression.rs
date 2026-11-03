@@ -194,7 +194,7 @@ impl Parser<'_, '_> {
             return;
         }
         match self.current() {
-            Some(kinds::NUMBER | kinds::CHAR | kinds::STRING | kinds::STAR) => {
+            Some(kinds::NUMBER | kinds::CHAR | kinds::STRING | kinds::STAR | kinds::DOLLAR) => {
                 self.builder.start_node(kinds::LITERAL);
                 self.bump();
                 self.builder.finish_node();

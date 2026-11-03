@@ -54,7 +54,7 @@ pub(crate) enum Shape {
     /// statement. Its tokens are read once preprocessing has made them.
     Synthesised,
     /// A command that changes how ca65 reads text, which this crate does
-    /// not model yet: `.feature` and `.linecont`.
+    /// not model yet: `.linecont`.
     Unsupported,
     /// A command that belongs inside an expression, or nowhere at the start
     /// of a statement: `.lobyte`, `.and`, `.sizeof`.
@@ -127,7 +127,7 @@ const SHAPES: &[(&str, Shape)] = &[
     (".EXPORTZP", Shape::Names),
     (".FARADDR", Shape::Values),
     (".FATAL", Shape::Message),
-    (".FEATURE", Shape::Unsupported),
+    (".FEATURE", Shape::Tokens),
     (".FILEOPT", Shape::Values),
     (".FOPT", Shape::Values),
     (".FORCEIMPORT", Shape::Names),

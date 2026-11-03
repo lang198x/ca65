@@ -117,6 +117,8 @@ kinds! {
     GE,
     /// `>>`
     SHR,
+    /// `$` on its own, the current address, with `dollar_is_pc`.
+    DOLLAR,
 
     // Nodes.
 

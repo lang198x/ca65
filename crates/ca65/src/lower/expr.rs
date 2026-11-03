@@ -307,7 +307,7 @@ fn literal_value(token: &SyntaxToken, known: &dyn Known) -> Result<Ir, Diagnosti
                 _ => Err(invalid(range, "a character is one byte")),
             }
         }
-        kinds::STAR => Ok(Ir::Pc),
+        kinds::STAR | kinds::DOLLAR => Ok(Ir::Pc),
         _ => Err(invalid(range, "a string is not a value here")),
     }
 }

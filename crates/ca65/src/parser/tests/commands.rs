@@ -171,16 +171,17 @@ fn a_token_function_can_start_a_statement() {
 #[test]
 fn reading_options_are_not_supported_yet() {
     use lang198x_syntax::DiagnosticKind;
-    // `.case` reads like `.smart`, and `.localchar` takes a value.
-    for command in [".feature c_comments", ".linecont +"] {
-        assert_eq!(
-            kinds_of(command),
-            [DiagnosticKind::Unsupported],
-            "{command}"
-        );
+    // `.case` reads like `.smart`, `.localchar` takes a value and
+    // `.feature` keeps its tokens; lowering checks each.
+    assert_eq!(kinds_of(".linecont +"), [DiagnosticKind::Unsupported]);
+    assert!(problems(".linecont +")[0].contains("not supported yet"));
+    for command in [
+        ".localchar '?'",
+        ".feature c_comments",
+        ".feature at_in_identifiers +, dollar_is_pc",
+    ] {
+        assert!(problems(command).is_empty(), "{command}");
     }
-    assert!(problems(".feature c_comments")[0].contains("not supported yet"));
-    assert!(problems(".localchar '?'").is_empty());
 }
 
 #[test]
