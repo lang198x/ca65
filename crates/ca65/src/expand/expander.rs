@@ -37,8 +37,8 @@
 use std::collections::{HashMap, HashSet};
 
 use lang198x_syntax::{
-    Diagnostic, DiagnosticKind, ExpansionId, FileId, Origin, Provenance, Span, SyntaxElement,
-    SyntaxKind, SyntaxToken, TextId, TextRange, TextSize,
+    Diagnostic, DiagnosticKind, ExpansionBuilder, ExpansionId, FileId, Origin, Provenance, Span,
+    SyntaxElement, SyntaxKind, SyntaxToken, TextId, TextRange, TextSize,
 };
 
 use super::conditional::{Conditionals, Misfit};
@@ -355,6 +355,11 @@ struct Source {
     /// another mode is lexed and parsed again: the CPU decides which names
     /// are registers, and the local character which names are cheap locals.
     mode: Mode,
+    /// The file it reads, for a file's text, even after the rest of it has
+    /// been parsed again as an expansion of the file.
+    file: Option<FileId>,
+    /// The texts it was read as before it was parsed again.
+    earlier: Vec<TextId>,
 }
 
 /// The character `.localchar` names: its one argument, a character
@@ -851,6 +856,11 @@ impl Expander {
             next: 0,
             call_depth,
             repeat: None,
+            file: match id {
+                TextId::File(file) => Some(file),
+                TextId::Expansion(_) => None,
+            },
+            earlier: Vec::new(),
         })
     }
 
@@ -858,6 +868,7 @@ impl Expander {
     /// A source that has run out is left.
     fn read(&mut self) -> Option<(Line, Vec<Diagnostic>, TextId)> {
         loop {
+            self.rejoin();
             let source = self.sources.last_mut()?;
             if let Some(line) = source.lines.get(source.next).cloned() {
                 let problems = source
@@ -873,7 +884,7 @@ impl Expander {
                 // A file is read as ca65 scans it, in the mode in force; the
                 // text of a macro or repeat keeps the tokens it was captured
                 // with, as ca65's does.
-                let stale = Self::is_stale(self.mode, source.mode, source.text);
+                let stale = Self::is_stale(self.mode, source.mode, source.file.is_some());
                 let text = source.text;
                 let reread = if stale {
                     self.reread(&line, text)
@@ -909,8 +920,8 @@ impl Expander {
     /// it was captured with. After `.case off`, or while names may start
     /// with a dot, every line of a file is, since a file is parsed with its
     /// names as written.
-    fn is_stale(now: Mode, mode: Mode, text: TextId) -> bool {
-        matches!(text, TextId::File(_)) && (mode != now || now.rereads())
+    fn is_stale(now: Mode, mode: Mode, file: bool) -> bool {
+        file && (mode != now || now.rereads())
     }
 
     /// `line`, from the file `text`, lexed and parsed again in the current
@@ -957,6 +968,61 @@ impl Expander {
         let problems = reread.line_problems.into_iter().flatten().collect();
         self.report_lexical(id, Some(lexed.diagnostics().to_vec()));
         Some((reparsed, problems, id))
+    }
+
+    /// Parses the rest of the innermost file again, from its next line,
+    /// when `.linecont` or `c_comments` has changed since it was parsed.
+    /// ca65 joins lines as it scans them, so after either changes, the
+    /// lines still to come are not the lines parsed before. The rest is
+    /// an expansion copied from the file, so every place in it traces back
+    /// there, and it is read as the file is.
+    fn rejoin(&mut self) {
+        let now = self.mode;
+        let Some(source) = self.sources.last() else {
+            return;
+        };
+        if source.file.is_none() || source.mode.joins() == now.joins() {
+            return;
+        }
+        let Some(line) = source.lines.get(source.next) else {
+            return;
+        };
+        let Some(root) = line.syntax().ancestors().last() else {
+            return;
+        };
+        let start = line.syntax().text_range().start();
+        let end = root.text_range().end();
+        let whole = root.text().to_string();
+        let (Some(rest), Some(range)) = (
+            whole.get(start.to_usize()..).map(str::to_owned),
+            TextRange::new(start, end),
+        ) else {
+            return;
+        };
+        let (text, call_depth) = (source.text, source.call_depth);
+        let mut builder = ExpansionBuilder::new();
+        builder.push(&rest, self.copied(Span::new(text, range)));
+        let Some(id) = builder
+            .finish()
+            .ok()
+            .and_then(|expansion| self.provenance.add(expansion).ok())
+            .map(TextId::Expansion)
+        else {
+            return;
+        };
+        let Ok(again) = self.load(id, &rest, None, call_depth, true) else {
+            return;
+        };
+        let Some(source) = self.sources.last_mut() else {
+            return;
+        };
+        source.earlier.push(source.text);
+        source.text = id;
+        source.lines = again.lines;
+        source.line_problems = again.line_problems;
+        source.lexical = again.lexical;
+        source.next = 0;
+        source.mode = again.mode;
     }
 
     /// Reports the lexer's problems with a line of `text`, once the line is
@@ -1013,6 +1079,22 @@ impl Expander {
                 };
                 if let Some(folded) = folded {
                     self.mode = self.mode.with_folded(folded);
+                }
+            }
+            // `.linecont` is the `line_continuations` feature.
+            ".linecont" => {
+                let on = match command.switch() {
+                    None => Some(true),
+                    Some(token) if token.kind() == kinds::PLUS => Some(true),
+                    Some(token) if token.kind() == kinds::MINUS => Some(false),
+                    Some(token) if token.text().eq_ignore_ascii_case("on") => Some(true),
+                    Some(token) if token.text().eq_ignore_ascii_case("off") => Some(false),
+                    Some(_) => None,
+                };
+                if let Some(on) = on {
+                    self.mode = self
+                        .mode
+                        .with_feature(crate::Feature::LineContinuations, on);
                 }
             }
             ".localchar" => {
@@ -1078,8 +1160,12 @@ impl Expander {
         if let Some(repeat) = source.repeat {
             self.run_again(repeat);
         }
-        if matches!(source.text, TextId::File(_)) {
-            for site in self.conditionals.close_opened_in(source.text) {
+        if source.file.is_some() {
+            let texts = source.earlier.iter().chain([&source.text]);
+            let sites: Vec<Span> = texts
+                .flat_map(|&text| self.conditionals.close_opened_in(text))
+                .collect();
+            for site in sites {
                 self.report(
                     site.text(),
                     site.range(),
@@ -1111,10 +1197,7 @@ impl Expander {
         self.sources
             .iter()
             .rev()
-            .find_map(|s| match s.text {
-                TextId::File(id) => Some(id),
-                TextId::Expansion(_) => None,
-            })
+            .find_map(|s| s.file)
             .unwrap_or(FileId::new(0))
     }
 
@@ -1175,7 +1258,7 @@ impl Expander {
             .sources
             .iter()
             .skip(1)
-            .filter(|s| matches!(s.text, TextId::File(_)))
+            .filter(|s| s.file.is_some())
             .count();
         if depth >= self.limits.include_depth {
             let message =
@@ -1476,12 +1559,13 @@ impl Expander {
     /// for a body being collected. Nothing on it runs.
     fn take(&mut self) -> Option<(Line, TextId)> {
         loop {
+            self.rejoin();
             let source = self.sources.last_mut()?;
             let Some(line) = source.lines.get(source.next).cloned() else {
                 // A body may run on past the end of an included file, as
                 // ca65 reads tokens, but not past a macro's or repeat's text.
-                let included = self.sources.len() > 1
-                    && matches!(self.sources.last().map(|s| s.text), Some(TextId::File(_)));
+                let included =
+                    self.sources.len() > 1 && self.sources.last().is_some_and(|s| s.file.is_some());
                 if !included {
                     return None;
                 }
@@ -1492,7 +1576,7 @@ impl Expander {
             let lexical = source.lexical.get(source.next).cloned();
             source.next += 1;
             // A body is captured as tokens for the mode in force now.
-            let stale = Self::is_stale(self.mode, source.mode, text);
+            let stale = Self::is_stale(self.mode, source.mode, source.file.is_some());
             let (line, text) = match stale.then(|| self.reread(&line, text)).flatten() {
                 Some((line, _, text)) => (line, text),
                 None => {

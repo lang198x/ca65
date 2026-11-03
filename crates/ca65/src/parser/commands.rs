@@ -6,8 +6,6 @@
 //! rest of the line as tokens. Commands that only make sense inside an
 //! expression, such as `.lobyte`, cannot start a statement.
 
-use lang198x_syntax::DiagnosticKind;
-
 use super::{Block, Parser};
 use crate::kinds;
 
@@ -53,9 +51,6 @@ pub(crate) enum Shape {
     /// A token function, such as `.ident("x")`, whose result makes the
     /// statement. Its tokens are read once preprocessing has made them.
     Synthesised,
-    /// A command that changes how ca65 reads text, which this crate does
-    /// not model yet: `.linecont`.
-    Unsupported,
     /// A command that belongs inside an expression, or nowhere at the start
     /// of a statement: `.lobyte`, `.and`, `.sizeof`.
     Unexpected,
@@ -171,7 +166,7 @@ const SHAPES: &[(&str, Shape)] = &[
     (".ISMNEM", Shape::Unexpected),
     (".ISMNEMONIC", Shape::Unexpected),
     (".LEFT", Shape::Synthesised),
-    (".LINECONT", Shape::Unsupported),
+    (".LINECONT", Shape::Switch),
     (".LIST", Shape::Switch),
     (".LISTBYTES", Shape::Values),
     (".LITERAL", Shape::Values),
@@ -373,14 +368,6 @@ impl Parser<'_, '_> {
                 }
             }
             Shape::Tokens => self.tokens_to_line_end(),
-            Shape::Unsupported => {
-                let start = self.offset(self.pos - 1);
-                let end = self.offset(self.pos);
-                let message =
-                    format!("`{word}` changes how ca65 reads source, which is not supported yet");
-                self.report_kind(DiagnosticKind::Unsupported, start, end, &message);
-                self.tokens_to_line_end();
-            }
         }
     }
 
@@ -553,12 +540,6 @@ impl Parser<'_, '_> {
         } else {
             self.error_to_line_end(message);
         }
-    }
-
-    fn report_kind(&mut self, kind: DiagnosticKind, start: usize, end: usize, message: &str) {
-        let range = self.range(start, end);
-        self.diagnostics
-            .push(lang198x_syntax::Diagnostic::new(kind, range, message));
     }
 }
 
