@@ -1,11 +1,11 @@
 # Plan: settings that change how ca65 reads
 
-**Status:** Proposed 2026-11-02.
+**Status:** Agreed 2026-11-03.
 **Binding records:** Lang198x's
 [shared syntax layer decision](https://github.com/lang198x/lang198x/blob/main/decisions/shared-syntax-layer.md)
 and 198x's
 [assembly source layer decision](https://github.com/stevehill1981/198x/blob/main/decisions/assembly-source-layer-moves-to-lang198x.md).
-**Follows:** Lang198x's proposed record on
+**Follows:** Lang198x's record on
 [settings that change how source is read](https://github.com/lang198x/lang198x/blob/main/decisions/reading-settings.md),
 which sets the rules here for every family. This plan is ca65's part of it.
 
@@ -105,7 +105,7 @@ and which keeps an offset map back to the bytes. The present
 over text, such as an editor, do not change. A listing can show the bytes
 back as UTF-8 when they are valid, since it has them.
 
-## Settled, if this plan is agreed
+## Settled
 
 - **`Mode` carries the scanner settings.** It keeps the CPU, and adds case,
   the local character, line continuations and every feature. The expander
