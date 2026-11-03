@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.32](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.31...lang198x-ca65-v0.0.32) - 2026-11-03
+
+### Added
+
+- lower the four meaning features and warn of addrsize
+
 ## [0.0.31](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.30...lang198x-ca65-v0.0.31) - 2026-11-03
 
 ### Added
