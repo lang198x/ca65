@@ -156,18 +156,24 @@ pub fn parse_with(
     profile: Profile,
     context: &mut dyn Context,
 ) -> Result<Parse, ParseError> {
-    parse_from(text, Box::new(Lexer::new(text)), profile, context, &[])
+    parse_from(
+        text,
+        Box::new(Lexer::new(text)),
+        Mode::of(profile),
+        context,
+        &[],
+    )
 }
 
 /// Parses `text` like [`parse_with`], inside `blocks`: the blocks open
 /// where the text goes.
 pub(crate) fn parse_in(
     text: &str,
-    profile: Profile,
+    mode: Mode,
     context: &mut dyn Context,
     blocks: &[Block],
 ) -> Result<Parse, ParseError> {
-    parse_from(text, Box::new(Lexer::new(text)), profile, context, blocks)
+    parse_from(text, Box::new(Lexer::new(text)), mode, context, blocks)
 }
 
 /// Parses `text` from `tokens`, which cover it exactly and are not lexed
@@ -176,14 +182,14 @@ pub(crate) fn parse_in(
 pub(crate) fn parse_prepared(
     text: &str,
     tokens: Vec<Token>,
-    profile: Profile,
+    mode: Mode,
     context: &mut dyn Context,
     blocks: &[Block],
 ) -> Result<Parse, ParseError> {
     parse_from(
         text,
         Box::new(Prepared(tokens.into_iter())),
-        profile,
+        mode,
         context,
         blocks,
     )
@@ -192,14 +198,14 @@ pub(crate) fn parse_prepared(
 fn parse_from<'t>(
     text: &'t str,
     lexer: Box<dyn TokenSource + 't>,
-    profile: Profile,
+    mode: Mode,
     context: &mut dyn Context,
     blocks: &[Block],
 ) -> Result<Parse, ParseError> {
     let mut parser = Parser {
         text,
         lexer,
-        mode: Mode::of(profile),
+        mode,
         next_start: 0,
         kinds: Vec::new(),
         starts: Vec::new(),
@@ -399,14 +405,19 @@ impl Parser<'_, '_> {
                 self.bump();
                 self.builder.finish_node();
             }
-            Some(kinds::UNNAMED) if self.text_at(self.pos).starts_with('@') => {
+            // The lexer makes a cheap-local reference only from the local
+            // character, `@` or `?`.
+            Some(kinds::UNNAMED) if self.text_at(self.pos).starts_with(['@', '?']) => {
                 self.builder.start_node(kinds::UNNAMED_LABEL);
+                let local = self.text_at(self.pos)[..1].to_owned();
                 if self.text_at(self.pos).len() > 1 {
                     let (start, end) = (self.offset(self.pos), self.offset(self.pos + 1));
-                    self.report(start, end, "an unnamed label is defined with `@` alone");
+                    let message = format!("an unnamed label is defined with `{local}` alone");
+                    self.report(start, end, &message);
                 }
+                let after = format!("expected `:` after `{local}`");
                 self.bump();
-                self.expect(kinds::COLON, "expected `:` after `@`");
+                self.expect(kinds::COLON, &after);
                 self.builder.finish_node();
             }
             _ => {}

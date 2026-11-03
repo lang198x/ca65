@@ -603,3 +603,24 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn the_local_character_starts_a_cheap_local() {
+    let at = Mode::of(Profile::CA65_2_19_6502);
+    let question = at.with_local('?').expect("`?` is a local character");
+    let kinds = |text: &str, mode: Mode| -> Vec<SyntaxKind> {
+        let mut lexer = Lexer::new(text);
+        std::iter::from_fn(|| lexer.next_token(mode))
+            .map(|t| t.kind)
+            .collect()
+    };
+    assert_eq!(kinds("@x", at), [kinds::CHEAP_IDENT]);
+    assert_eq!(kinds("?x", question), [kinds::CHEAP_IDENT]);
+    assert_eq!(kinds("?-", question), [kinds::UNNAMED]);
+    // The other character is not allowed anywhere.
+    assert_eq!(kinds("?x", at)[0], SyntaxKind::ERROR);
+    assert_eq!(kinds("@x", question)[0], SyntaxKind::ERROR);
+    // SWEET 16's indirect mark comes first, whichever character is chosen.
+    let sweet16 = question.with_cpu(crate::Cpu::Sweet16);
+    assert_eq!(kinds("@", sweet16), [kinds::AT]);
+}

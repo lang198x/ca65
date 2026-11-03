@@ -168,7 +168,9 @@ impl<'t> Lexer<'t> {
             // ca65 reads `@` as SWEET 16's indirect mark before it looks
             // for a cheap local name.
             '@' if mode.cpu() == crate::Cpu::Sweet16 => (kinds::AT, 1),
-            '@' => at(rest),
+            // `.localchar` chooses which of `@` and `?` starts a cheap local
+            // or an unnamed label. The other is not allowed anywhere.
+            c if c == mode.local() => at(rest),
             '\'' => (kinds::CHAR, self.character(rest)),
             '"' => (kinds::STRING, self.string(rest)),
             ':' => colon(rest),
@@ -340,8 +342,8 @@ fn name(rest: &str, mode: Mode) -> (SyntaxKind, usize) {
     )
 }
 
-/// After `@`: a cheap local name, or, with no name, an unnamed label
-/// reference such as `@-`.
+/// After the local character, `@` or `?`: a cheap local name, or, with no
+/// name, an unnamed label reference such as `@-`.
 fn at(rest: &str) -> (SyntaxKind, usize) {
     let after = &rest[1..];
     if after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {

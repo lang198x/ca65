@@ -344,10 +344,25 @@ struct Source {
     call_depth: Option<usize>,
     /// For a repeat, the times round still to come.
     repeat: Option<Repeat>,
-    /// The CPU its lines were parsed for. A line read after `.setcpu`
-    /// chose another is lexed and parsed again, since the CPU decides
-    /// which names are registers and which are instructions.
-    cpu: Cpu,
+    /// The mode its lines were parsed in. A file's line read under
+    /// another mode is lexed and parsed again: the CPU decides which names
+    /// are registers, and the local character which names are cheap locals.
+    mode: Mode,
+}
+
+/// The character `.localchar` names: its one argument, a character
+/// constant, or `None` for anything else.
+pub(crate) fn local_char(command: &Command) -> Option<char> {
+    let mut values = command.values();
+    let (Some(Expr::Literal(literal)), None) = (values.next(), values.next()) else {
+        return None;
+    };
+    let token = literal.token().filter(|t| t.kind() == kinds::CHAR)?;
+    let mut chars = token.text().strip_prefix('\'')?.chars();
+    match (chars.next(), chars.next(), chars.next()) {
+        (Some(c), Some('\''), None) => Some(c),
+        _ => None,
+    }
 }
 
 /// `line` for the host if it has a label, which is all of it the host
@@ -786,11 +801,11 @@ impl Expander {
             Some(tokens) => parse_prepared(
                 text,
                 tokens,
-                self.profile,
+                self.mode,
                 &mut Defined(&self.macros),
                 &self.blocks,
             )?,
-            None => parse_in(text, self.profile, &mut Defined(&self.macros), &self.blocks)?,
+            None => parse_in(text, self.mode, &mut Defined(&self.macros), &self.blocks)?,
         };
         let lines: Vec<Line> = SourceFile::cast(parse.tree().root())
             .map(|file| file.lines().collect())
@@ -825,7 +840,7 @@ impl Expander {
             lines,
             line_problems,
             lexical: lexical_problems,
-            cpu: self.mode.cpu(),
+            mode: self.mode,
             next: 0,
             call_depth,
             repeat: None,
@@ -843,23 +858,28 @@ impl Expander {
                     .get(source.next)
                     .cloned()
                     .unwrap_or_default();
-                if let Some(found) = source.lexical.get(source.next) {
-                    let text = source.text;
-                    self.diagnostics
-                        .extend(found.iter().map(|problem| (text, problem.clone())));
-                }
+                let lexical = source.lexical.get(source.next).cloned();
                 source.next += 1;
                 let unfinished = source.repeat.is_some()
                     && source.next == source.lines.len()
                     && !ends_line(&line);
-                // A file is read as ca65 scans it, for the CPU in force; the
+                // A file is read as ca65 scans it, in the mode in force; the
                 // text of a macro or repeat keeps the tokens it was captured
                 // with, as ca65's does.
-                let stale = source.cpu != self.mode.cpu() && matches!(source.text, TextId::File(_));
-                let mut read = (line, problems, source.text);
-                if stale {
-                    read = self.reread(&read.0, read.2).unwrap_or(read);
-                }
+                let stale = Self::is_stale(self.mode, source.mode, source.text);
+                let text = source.text;
+                let reread = if stale {
+                    self.reread(&line, text)
+                } else {
+                    None
+                };
+                let mut read = match reread {
+                    Some(read) => read,
+                    None => {
+                        self.report_lexical(text, lexical);
+                        (line, problems, text)
+                    }
+                };
                 if let Some((carried, carried_text)) = self.carry.take() {
                     read = self.join(&carried, carried_text, &read.0, read.2)?;
                 }
@@ -877,7 +897,16 @@ impl Expander {
         }
     }
 
-    /// `line`, from `text`, lexed and parsed again for the current CPU.
+    /// Whether a line of `text`, parsed in `mode`, must be read again in
+    /// `now`, the mode in force. Only a file's lines are: a body keeps the tokens
+    /// it was captured with. After `.case off`, every line of a file is,
+    /// since a file is parsed with its names as written.
+    fn is_stale(now: Mode, mode: Mode, text: TextId) -> bool {
+        matches!(text, TextId::File(_)) && (mode != now || now.folded())
+    }
+
+    /// `line`, from `text`, lexed and parsed again in the current mode,
+    /// with its names in upper case after `.case off`.
     fn reread(&mut self, line: &Line, text: TextId) -> Option<(Line, Vec<Diagnostic>, TextId)> {
         let mut builder = Made::new();
         for token in line
@@ -886,17 +915,30 @@ impl Expander {
             .filter_map(SyntaxElement::into_token)
         {
             let from = Span::new(text, token.text_range());
-            builder.token(&token, from, self.copied(from), &self.strings);
+            let origin = self.copied(from);
+            if self.mode.folded() && matches!(token.kind(), kinds::IDENT | kinds::CHEAP_IDENT) {
+                builder.push(&self.mode.read_name(token.text()), token.kind(), origin);
+            } else {
+                builder.token(&token, from, origin, &self.strings);
+            }
         }
         let (builder, _, strings) = builder.finish();
         let expansion = builder.finish().ok()?;
         let made = expansion.text().to_owned();
         let id = TextId::Expansion(self.provenance.add(expansion).ok()?);
         self.strings.add(id, strings);
-        let source = self.load(id, &made, None, None, false).ok()?;
+        let source = self.load(id, &made, None, None, true).ok()?;
         let reparsed = source.lines.first().cloned()?;
         let problems = source.line_problems.into_iter().flatten().collect();
+        self.report_lexical(id, Some(source.lexical.into_iter().flatten().collect()));
         Some((reparsed, problems, id))
+    }
+
+    /// Reports the lexer's problems with a line of `text`, once the line is
+    /// read: a line read again reports those of its second reading instead.
+    fn report_lexical(&mut self, text: TextId, found: Option<Vec<Diagnostic>>) {
+        self.diagnostics
+            .extend(found.into_iter().flatten().map(|problem| (text, problem)));
     }
 
     /// The CPU commands, which change how the lines after them are read:
@@ -926,7 +968,34 @@ impl Expander {
         };
         if let Some(cpu) = cpu {
             self.profile = self.profile.with_cpu(cpu);
-            self.mode = Mode::of(self.profile);
+            self.mode = self.mode.with_cpu(cpu);
+        }
+    }
+
+    /// The commands that change how names are read: `.case` and
+    /// `.localchar`. A malformed one changes nothing, and is left for
+    /// lowering to report.
+    fn choose_reading(&mut self, command: &Command, word: &str) {
+        match word {
+            ".case" => {
+                let folded = match command.switch() {
+                    None => Some(false),
+                    Some(token) if token.kind() == kinds::PLUS => Some(false),
+                    Some(token) if token.kind() == kinds::MINUS => Some(true),
+                    Some(token) if token.text().eq_ignore_ascii_case("on") => Some(false),
+                    Some(token) if token.text().eq_ignore_ascii_case("off") => Some(true),
+                    Some(_) => None,
+                };
+                if let Some(folded) = folded {
+                    self.mode = self.mode.with_folded(folded);
+                }
+            }
+            ".localchar" => {
+                if let Some(mode) = local_char(command).and_then(|c| self.mode.with_local(c)) {
+                    self.mode = mode;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1148,6 +1217,7 @@ impl Expander {
                 let word = command.word().map(|w| w.text().to_ascii_lowercase());
                 if let Some(word) = word.as_deref() {
                     self.choose_cpu(&command, word, text);
+                    self.choose_reading(&command, word);
                 }
                 match word.as_deref() {
                     Some(word) if is_conditional(word) => {
@@ -1376,17 +1446,16 @@ impl Expander {
                 continue;
             };
             let text = source.text;
-            if let Some(found) = source.lexical.get(source.next) {
-                self.diagnostics
-                    .extend(found.iter().map(|problem| (text, problem.clone())));
-            }
-            let source = self.sources.last_mut()?;
+            let lexical = source.lexical.get(source.next).cloned();
             source.next += 1;
-            // A body is captured as tokens for the CPU in force now.
-            let stale = source.cpu != self.mode.cpu() && matches!(text, TextId::File(_));
+            // A body is captured as tokens for the mode in force now.
+            let stale = Self::is_stale(self.mode, source.mode, text);
             let (line, text) = match stale.then(|| self.reread(&line, text)).flatten() {
                 Some((line, _, text)) => (line, text),
-                None => (line, text),
+                None => {
+                    self.report_lexical(text, lexical);
+                    (line, text)
+                }
             };
             if let Some((line, _, text)) = self.expand_defines(line, Vec::new(), text, true) {
                 return Some((line, text));
@@ -1979,6 +2048,10 @@ impl functions::Answers for Asked<'_> {
 
     fn is_mnemonic(&self, name: &str) -> bool {
         self.expander.mode.cpu().is_mnemonic(name)
+    }
+
+    fn mode(&self) -> Mode {
+        self.expander.mode
     }
 
     fn translate(&mut self, character: u8) -> u8 {

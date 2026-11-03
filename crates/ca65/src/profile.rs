@@ -317,28 +317,81 @@ impl Profile {
 /// What the lexer needs to know about the source at one point in it.
 ///
 /// ca65 can change how it reads text partway through a file. `.setcpu`
-/// changes which names are registers, and `.feature`, `.case` and
-/// `.linecont` change what counts as a name, a number, a comment or a line.
-/// So the parser hands the lexer a mode for each token it asks for.
+/// changes which names are registers, `.case off` makes names ignore case,
+/// and `.localchar` chooses the character that starts a cheap local. So the
+/// parser hands the lexer a mode for each token it asks for.
 ///
-/// Only ca65's default mode exists so far: every `.feature` off, names
-/// case-sensitive and no line continuation. The CPU is the one setting.
+/// The rules are in Lang198x's record on
+/// [settings that change how source is read](https://github.com/lang198x/lang198x/blob/main/decisions/reading-settings.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mode {
     cpu: Cpu,
+    folded: bool,
+    local: char,
 }
 
 impl Mode {
-    /// The mode a file starts in under `profile`.
+    /// The mode a file starts in under `profile`: names keep their case and
+    /// a cheap local starts with `@`.
     #[must_use]
     pub const fn of(profile: Profile) -> Self {
-        Self { cpu: profile.cpu }
+        Self {
+            cpu: profile.cpu,
+            folded: false,
+            local: '@',
+        }
     }
 
     /// The CPU whose registers the lexer recognises.
     #[must_use]
     pub const fn cpu(self) -> Cpu {
         self.cpu
+    }
+
+    /// This mode, for `cpu`.
+    #[must_use]
+    pub const fn with_cpu(self, cpu: Cpu) -> Self {
+        Self { cpu, ..self }
+    }
+
+    /// Whether names are read in upper case, as after `.case off`.
+    #[must_use]
+    pub const fn folded(self) -> bool {
+        self.folded
+    }
+
+    /// This mode, with names read in upper case or not.
+    #[must_use]
+    pub const fn with_folded(self, folded: bool) -> Self {
+        Self { folded, ..self }
+    }
+
+    /// The character that starts a cheap local: `@`, or `?` after
+    /// `.localchar '?'`.
+    #[must_use]
+    pub const fn local(self) -> char {
+        self.local
+    }
+
+    /// This mode, with cheap locals started by `local`, or `None` unless it
+    /// is `@` or `?`, the only two ca65 allows.
+    #[must_use]
+    pub const fn with_local(self, local: char) -> Option<Self> {
+        match local {
+            '@' | '?' => Some(Self { local, ..self }),
+            _ => None,
+        }
+    }
+
+    /// `name` as it is read in this mode: in upper case after `.case off`.
+    /// ca65 changes only ASCII letters.
+    #[must_use]
+    pub fn read_name(self, name: &str) -> String {
+        if self.folded {
+            name.to_ascii_uppercase()
+        } else {
+            name.to_owned()
+        }
     }
 }
 
@@ -361,6 +414,22 @@ mod tests {
         let mode = Mode::of(Profile::CA65_2_19_6502);
         assert_eq!(mode.cpu(), Cpu::Mos6502);
         assert_eq!(mode.cpu().registers(), ["A", "X", "Y"]);
+        assert!(!mode.folded());
+        assert_eq!(mode.local(), '@');
+    }
+
+    #[test]
+    fn a_mode_changes_one_setting_at_a_time() {
+        let mode = Mode::of(Profile::CA65_2_19_6502).with_folded(true);
+        assert!(mode.folded());
+        assert_eq!(mode.read_name("Foo_1"), "FOO_1");
+        assert_eq!(mode.with_folded(false).read_name("Foo"), "Foo");
+        let mode = mode.with_cpu(Cpu::Wdc65816);
+        assert!(mode.folded());
+        assert_eq!(mode.cpu(), Cpu::Wdc65816);
+        let question = mode.with_local('?');
+        assert_eq!(question.map(Mode::local), Some('?'));
+        assert_eq!(mode.with_local('#'), None);
     }
 
     #[test]
