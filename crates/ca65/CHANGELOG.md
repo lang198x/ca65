@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.28](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.27...lang198x-ca65-v0.0.28) - 2026-11-03
+
+### Added
+
+- read names under .case and .localchar
+
+### Fixed
+
+- gate the local-character re-export on the ir feature
+
 ## [0.0.27](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.26...lang198x-ca65-v0.0.27) - 2026-11-02
 
 ### Added
