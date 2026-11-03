@@ -84,8 +84,7 @@ impl Piece {
 
 /// What a string token's text holds, without its quotes.
 pub(super) fn unquoted(text: &str) -> &str {
-    let text = text.strip_prefix('"').unwrap_or(text);
-    text.strip_suffix('"').unwrap_or(text)
+    crate::quoted::unquoted(text)
 }
 
 /// A define-style macro, as defined.
@@ -196,6 +195,7 @@ pub(super) fn expand(
         .collect();
     let mut stream = Stream {
         defines,
+        strings,
         stack: vec![base.into_iter()],
         made: 0,
         limit,
@@ -222,6 +222,8 @@ fn names_a_define(word: &str) -> bool {
 /// being read, innermost last.
 struct Stream<'d> {
     defines: &'d HashMap<String, Define>,
+    /// The kept bytes of strings, so a define's body keeps its own.
+    strings: &'d Strings,
     stack: Vec<std::vec::IntoIter<Piece>>,
     made: usize,
     limit: usize,
@@ -349,7 +351,7 @@ impl Stream<'_> {
             {
                 text.extend(args[index].iter().cloned());
             } else {
-                text.push(Piece::new(
+                text.push(self.strings.piece(
                     token,
                     Origin::Expanded {
                         from: *from,

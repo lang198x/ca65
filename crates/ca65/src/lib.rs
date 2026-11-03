@@ -36,6 +36,7 @@ mod measured;
 mod number;
 mod parser;
 mod profile;
+mod quoted;
 
 pub use format::format;
 pub use keywords::{CONTROL_COMMANDS, is_control_command};

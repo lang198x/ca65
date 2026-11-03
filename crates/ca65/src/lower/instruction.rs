@@ -827,6 +827,14 @@ impl Known for Defaulted<'_> {
     fn translate(&self, character: u8) -> u8 {
         self.0.translate(character)
     }
+
+    fn has_feature(&self, feature: crate::Feature) -> bool {
+        self.0.has_feature(feature)
+    }
+
+    fn string(&self, token: &lang198x_syntax::SyntaxToken) -> Option<(Vec<u8>, Vec<bool>)> {
+        self.0.string(token)
+    }
 }
 
 fn register(token: Option<SyntaxToken>) -> Option<String> {

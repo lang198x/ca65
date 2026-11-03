@@ -416,10 +416,14 @@ impl Mode {
         }
     }
 
-    /// Whether a name may be spelt differently from how this mode reads
-    /// it, so a line must be read again to get its names right.
-    pub(crate) const fn renames(self) -> bool {
-        self.folded || self.has(Feature::LeadingDotInIdentifiers)
+    /// Whether a line read in this mode may hold names or strings its text
+    /// does not spell as they are read: names after `.case off`, names
+    /// starting with a dot, and strings with escapes. Such a line is read
+    /// again even when the mode has not changed since its file was parsed.
+    pub(crate) const fn rereads(self) -> bool {
+        self.folded
+            || self.has(Feature::LeadingDotInIdentifiers)
+            || self.has(Feature::StringEscapes)
     }
 }
 
@@ -590,7 +594,7 @@ mod tests {
         assert_eq!(mode.read_name(".foo"), ".FOO");
         assert!(
             mode.with_feature(Feature::LeadingDotInIdentifiers, true)
-                .renames()
+                .rereads()
         );
     }
 

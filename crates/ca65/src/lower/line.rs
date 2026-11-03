@@ -1,7 +1,7 @@
 //! One line, as the expander hands it over, lowered to IR statements.
 
 use asm198x_ir::{BinOp, DataRange, DiagSeverity, Expr as Ir, Operation};
-use lang198x_syntax::{Diagnostic, SyntaxToken};
+use lang198x_syntax::{Diagnostic, SyntaxKind, SyntaxToken};
 
 use super::expr::{self, invalid, unsupported};
 use super::record::{self as records, Record};
@@ -209,6 +209,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
         widths,
         cpu: line.cpu(),
         finished: line.finished(),
+        line: Some(line),
     };
     let known: &dyn Known = &on_line;
     let mut scope = None;
@@ -367,6 +368,7 @@ pub fn condition(
         widths: known.widths(),
         cpu: known.cpu(),
         finished,
+        line: None,
     };
     super::expression(expr, &on_line)
 }
@@ -381,6 +383,9 @@ struct OnLine<'a> {
     cpu: crate::Cpu,
     /// How many token functions ran before each `.ref` on the line.
     finished: &'a Finished,
+    /// The line, which knows its mode and its strings' bytes, or `None`
+    /// for a condition lowered on its own.
+    line: Option<&'a ActiveLine>,
 }
 
 impl OnLine<'_> {
@@ -440,6 +445,20 @@ impl Known for OnLine<'_> {
 
     fn cpu(&self) -> crate::Cpu {
         self.cpu
+    }
+
+    fn has_feature(&self, feature: crate::Feature) -> bool {
+        match self.line {
+            Some(line) => line.mode().has(feature),
+            None => self.known.has_feature(feature),
+        }
+    }
+
+    fn string(&self, token: &SyntaxToken) -> Option<(Vec<u8>, Vec<bool>)> {
+        match self.line {
+            Some(line) => Some((line.string(token)?, line.raw(token)?)),
+            None => self.known.string(token),
+        }
     }
 
     fn translate(&self, character: u8) -> u8 {
@@ -985,10 +1004,26 @@ fn bytes(
         };
         match string {
             Some(bytes) => out.extend(bytes.into_iter().map(|b| Ir::Num(i64::from(b)))),
+            // ca65 takes a value that starts with a string as that string,
+            // so `"a"+1` is a string then more, even where `loose_char_term`
+            // makes `"a"` a character elsewhere.
+            None if starts_with_string(&value) => {
+                return Err(invalid(value.syntax().text_range(), "Expected end-of-line"));
+            }
             None => out.push(expr::expression(&value, known)?),
         }
     }
     Ok(out)
+}
+
+/// Whether `value`'s first token is a string.
+fn starts_with_string(value: &Expr) -> bool {
+    value
+        .syntax()
+        .descendants()
+        .filter_map(lang198x_syntax::SyntaxElement::into_token)
+        .find(|token| token.kind() != SyntaxKind::WHITESPACE)
+        .is_some_and(|token| token.kind() == kinds::STRING)
 }
 
 /// The bytes a string literal makes in the program: each through the

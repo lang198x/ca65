@@ -592,7 +592,8 @@ fn string_piece(call: &Call, bytes: Vec<u8>) -> Piece {
 /// a raw byte keeps its bytes too, since its text cannot say which are raw.
 fn marked_piece(call: &Call, bytes: Vec<u8>, raw: &[bool]) -> Piece {
     let mut piece = call.made(shown(&bytes), kinds::STRING);
-    if let Some(kept) = super::made::Kept::of(&bytes, Some(raw).filter(|r| !r.is_empty())) {
+    let kept = super::made::Kept::of(&piece.text, &bytes, Some(raw).filter(|r| !r.is_empty()));
+    if let Some(kept) = kept {
         piece.bytes = Some(kept.bytes);
         piece.raw = Some(kept.raw);
     }

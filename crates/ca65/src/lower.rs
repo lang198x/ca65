@@ -196,6 +196,24 @@ pub trait Known {
         crate::Cpu::Mos6502
     }
 
+    /// Whether `feature` is on for the line, such as `loose_char_term`,
+    /// which lets a one-byte string be a character. Lowering a line answers
+    /// this from the line; by default every feature is off.
+    fn has_feature(&self, feature: crate::Feature) -> bool {
+        let _ = feature;
+        false
+    }
+
+    /// The bytes a string `token` on the line holds, with which of them
+    /// are raw, which the character map leaves alone. Lowering a line
+    /// answers this from the line, which keeps the bytes of a string whose
+    /// escapes change them; by default, `None`, and the text between the
+    /// quotes is used.
+    fn string(&self, token: &lang198x_syntax::SyntaxToken) -> Option<(Vec<u8>, Vec<bool>)> {
+        let _ = token;
+        None
+    }
+
     /// The time ca65's `.time` gives: seconds since the Unix epoch, when the
     /// assembler reads the line. The default is the system clock; an
     /// assembler that wants repeatable output can give a fixed time.

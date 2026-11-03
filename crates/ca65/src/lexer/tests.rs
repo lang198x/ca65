@@ -679,3 +679,45 @@ fn features_change_names_and_numbers() {
     assert_eq!(lexed("$$10", pc)[0], (kinds::DOLLAR, "$".to_owned()));
     assert_eq!(one("$", MODE), kinds::NUMBER);
 }
+
+#[test]
+fn features_change_strings_and_characters() {
+    use crate::Feature;
+    let with = |feature: Feature| MODE.with_feature(feature, true);
+    let kinds_of = |text: &str, mode: Mode| -> Vec<SyntaxKind> {
+        lex(text, mode)
+            .tokens()
+            .iter()
+            .map(|t| t.kind())
+            .filter(|k| *k != SyntaxKind::WHITESPACE)
+            .collect()
+    };
+    let loose = with(Feature::LooseStringTerm);
+    assert_eq!(
+        kinds_of("'abc' 'a' ''", loose),
+        [kinds::STRING, kinds::CHAR, kinds::STRING]
+    );
+    let missing = with(Feature::MissingCharTerm);
+    assert_eq!(
+        kinds_of("'a, 2", missing),
+        [kinds::CHAR, kinds::COMMA, kinds::NUMBER]
+    );
+    assert!(lex("'a", missing).diagnostics().is_empty());
+    let escapes = with(Feature::StringEscapes);
+    assert_eq!(
+        kinds_of(r#""a\"b" 1"#, escapes),
+        [kinds::STRING, kinds::NUMBER]
+    );
+    assert_eq!(kinds_of(r"'\n'", escapes), [kinds::CHAR]);
+    assert!(lex(r"'\x41'", escapes).diagnostics().is_empty());
+    assert_eq!(
+        lex(r#""\q""#, escapes).diagnostics()[0].message(),
+        "Unsupported escape sequence in string constant"
+    );
+    assert_eq!(
+        lex(r"'\q'", escapes).diagnostics()[0].message(),
+        "Unsupported escape sequence in string constant"
+    );
+    // Without escapes, a backslash ends nothing.
+    assert_eq!(kinds_of(r#""a\" 1"#, MODE), [kinds::STRING, kinds::NUMBER]);
+}
