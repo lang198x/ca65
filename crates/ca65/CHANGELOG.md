@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.30](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.29...lang198x-ca65-v0.0.30) - 2026-11-03
+
+### Added
+
+- join lines under .linecont and c_comments
+
 ## [0.0.29](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.28...lang198x-ca65-v0.0.29) - 2026-11-03
 
 ### Added
