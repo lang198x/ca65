@@ -24,6 +24,8 @@ pub enum Statement {
     Member(Member),
     /// A line of a macro's body, kept as tokens.
     MacroBody(MacroBody),
+    /// `* = value`, which `pc_assignment` allows: `.org value`.
+    PcAssignment(PcAssignment),
 }
 
 impl View for Statement {
@@ -35,6 +37,7 @@ impl View for Statement {
             kinds::ASSIGNMENT => Self::Assignment(Assignment(node)),
             kinds::MEMBER => Self::Member(Member(node)),
             kinds::MACRO_BODY => Self::MacroBody(MacroBody(node)),
+            kinds::PC_ASSIGNMENT => Self::PcAssignment(PcAssignment(node)),
             _ => return None,
         })
     }
@@ -47,7 +50,22 @@ impl View for Statement {
             Self::Assignment(view) => view.syntax(),
             Self::Member(view) => view.syntax(),
             Self::MacroBody(view) => view.syntax(),
+            Self::PcAssignment(view) => view.syntax(),
         }
+    }
+}
+
+view! {
+    /// `* = value`, or `$ = value` with `dollar_is_pc`, which the
+    /// `pc_assignment` feature reads as `.org value`.
+    PcAssignment, kinds::PC_ASSIGNMENT
+}
+
+impl PcAssignment {
+    /// Returns the new address.
+    #[must_use]
+    pub fn value(&self) -> Option<Expr> {
+        child(&self.0)
     }
 }
 

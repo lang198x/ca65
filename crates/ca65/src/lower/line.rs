@@ -307,6 +307,14 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
                     },
                 },
             },
+            // `* = value`, which `pc_assignment` allows, is `.org value`.
+            Some(Statement::PcAssignment(assignment)) => {
+                let range = assignment.syntax().text_range();
+                let value = assignment
+                    .value()
+                    .ok_or_else(|| invalid(range, "expected a value"))?;
+                Some(Operation::Org(expr::expression(&value, known)?))
+            }
             Some(member @ Statement::Member(_)) => {
                 record = records::record(&member, known)?;
                 None

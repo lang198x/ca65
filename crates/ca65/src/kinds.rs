@@ -133,6 +133,8 @@ kinds! {
     /// A symbol set to a value: `name = value`, `name := value` or
     /// `name .set value`.
     ASSIGNMENT,
+    /// `* = value`, with `pc_assignment`.
+    PC_ASSIGNMENT,
     /// A name being defined, perhaps qualified by scopes, as in `outer::x`.
     NAME,
     /// A machine instruction: its mnemonic and any `OPERAND`.

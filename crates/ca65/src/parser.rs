@@ -46,7 +46,7 @@ use lang198x_syntax::{
 };
 
 use crate::lexer::{Prepared, TokenSource};
-use crate::{Lexer, Mode, Profile, Token, kinds};
+use crate::{Feature, Lexer, Mode, Profile, Token, kinds};
 
 pub(crate) mod commands;
 mod expression;
@@ -212,6 +212,7 @@ fn parse_from<'t>(
         pos: 0,
         depth: 0,
         name_start: 0,
+        line_start: 0,
         builder: TreeBuilder::new(text),
         diagnostics: Vec::new(),
         context,
@@ -274,6 +275,9 @@ struct Parser<'t, 'c> {
     depth: usize,
     /// Where the name being defined on this line starts.
     name_start: usize,
+    /// Where the line being parsed starts, so a name there can be told
+    /// from one after space, which `labels_without_colons` cares about.
+    line_start: usize,
     builder: TreeBuilder<'t>,
     diagnostics: Vec<Diagnostic>,
     context: &'c mut dyn Context,
@@ -319,6 +323,7 @@ impl Parser<'_, '_> {
 
     fn line(&mut self) {
         self.builder.start_node(kinds::LINE);
+        self.line_start = self.offset(self.pos);
         self.trivia();
         if self.in_macro_body {
             self.macro_body_line();
@@ -472,6 +477,15 @@ impl Parser<'_, '_> {
                 self.builder.finish_node();
                 true
             }
+            // With `labels_without_colons`, a name at the very start of a
+            // line is a label without its colon. One after space is not.
+            _ if self.mode.has(Feature::LabelsWithoutColons)
+                && self.name_start == self.line_start =>
+            {
+                self.builder.start_node_at(checkpoint, kinds::LABEL);
+                self.builder.finish_node();
+                true
+            }
             _ => {
                 // The whole line is refused, from the name on.
                 let start = self.offset(self.pos);
@@ -524,7 +538,26 @@ impl Parser<'_, '_> {
         match self.next_kind() {
             None | Some(SyntaxKind::COMMENT | SyntaxKind::NEWLINE) => {}
             Some(kinds::CONTROL) => self.command(),
-            Some(kinds::IDENT) if self.is_mnemonic(self.next_text()) => self.instruction(),
+            // With `ubiquitous_idents`, a macro may be named like an
+            // instruction, and ca65 looks for the macro first.
+            Some(kinds::IDENT)
+                if self.is_mnemonic(self.next_text())
+                    && !(self.mode.has(Feature::UbiquitousIdents)
+                        && self.next_macro_kind() == Macro::Known) =>
+            {
+                self.instruction();
+            }
+            // With `pc_assignment`, `* = value` is `.org value`, and so is
+            // `$ = value` with `dollar_is_pc`.
+            Some(kinds::STAR | kinds::DOLLAR) if self.mode.has(Feature::PcAssignment) => {
+                self.trivia();
+                self.builder.start_node(kinds::PC_ASSIGNMENT);
+                self.bump();
+                if self.require(kinds::EQ, "expected `=`") {
+                    self.expression();
+                }
+                self.builder.finish_node();
+            }
             Some(kinds::IDENT) => match self.next_macro_kind() {
                 Macro::Known => self.macro_call(),
                 Macro::Unknown => {
@@ -657,8 +690,19 @@ impl Parser<'_, '_> {
                     return;
                 }
             }
-            Some(kinds::L_PAREN) => {
-                self.indirect();
+            // With `bracket_as_indirect`, square brackets mark indirection,
+            // and parentheses only group a value.
+            Some(kinds::L_BRACK) if self.mode.has(Feature::BracketAsIndirect) => {
+                self.indirect(kinds::R_BRACK, "expected `]`");
+                if self.next_kind() == Some(kinds::COMMA) {
+                    self.bump_next();
+                    self.builder.finish_node();
+                    self.operand();
+                    return;
+                }
+            }
+            Some(kinds::L_PAREN) if !self.mode.has(Feature::BracketAsIndirect) => {
+                self.indirect(kinds::R_PAREN, "expected `)`");
                 // `(address), target`, a bit branch's address in parentheses.
                 if self.next_kind() == Some(kinds::COMMA) {
                     self.bump_next();
@@ -693,8 +737,9 @@ impl Parser<'_, '_> {
 
     /// `(address)`, `(address,x)` or `(address),y`, and on the 65CE02
     /// family `(address),z` and `(offset,sp),y`. `z` and `sp` are registers
-    /// only on those CPUs, as the lexer's mode says.
-    fn indirect(&mut self) {
+    /// only on those CPUs, as the lexer's mode says. `close` ends it: `)`,
+    /// or `]` with `bracket_as_indirect`.
+    fn indirect(&mut self, close: SyntaxKind, expected: &str) {
         self.trivia();
         self.builder.start_node(kinds::INDIRECT);
         self.bump();
@@ -704,7 +749,7 @@ impl Parser<'_, '_> {
             self.bump_next();
         }
         let closed = (!indexed || self.require_register(&["x", "s", "sp"], "expected `x` or `s`"))
-            && self.require(kinds::R_PAREN, "expected `)`");
+            && self.require(close, expected);
         // A comma before anything but a register is left for a bit branch's
         // target.
         let register_follows = self.peek_nth(1) == Some(kinds::REGISTER)

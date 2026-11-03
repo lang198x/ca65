@@ -38,7 +38,8 @@ pub use expr::{
 pub use line::{Label, Line, Name, SourceFile, UnnamedLabel};
 pub use operand::{Immediate, Index, Indirect, LongIndirect, Operand};
 pub use statement::{
-    Assignment, Command, Instruction, Item, MacroBody, MacroCall, Member, Params, Statement,
+    Assignment, Command, Instruction, Item, MacroBody, MacroCall, Member, Params, PcAssignment,
+    Statement,
 };
 
 /// A typed view of a node.

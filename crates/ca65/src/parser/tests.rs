@@ -586,3 +586,131 @@ fn a_message_reads_past_its_string() {
         "(LINE (COMMAND .error (LITERAL \"e\")))"
     );
 }
+
+// ---- Parsing features -------------------------------------------------------
+
+/// `text` parsed with `feature` on, as each line rendered and each problem.
+fn featured(feature: Feature, profile: Profile, text: &str) -> (Vec<String>, Vec<String>) {
+    let mode = Mode::of(profile).with_feature(feature, true);
+    let parse = parse_in(text, mode, &mut Standalone, &[]).expect("short text always parses");
+    let lines = parse
+        .tree()
+        .root()
+        .children()
+        .filter_map(SyntaxElement::into_node)
+        .map(|line| render(&line))
+        .collect();
+    let problems = parse
+        .diagnostics()
+        .iter()
+        .map(|d| format!("{} {}", d.range(), d.message()))
+        .collect();
+    (lines, problems)
+}
+
+fn on_6502(feature: Feature, text: &str) -> (Vec<String>, Vec<String>) {
+    featured(feature, Profile::CA65_2_19_6502, text)
+}
+
+#[test]
+fn labels_without_colons_start_their_line() {
+    let feature = Feature::LabelsWithoutColons;
+    assert_eq!(
+        on_6502(feature, "foo nop\n"),
+        (
+            vec!["(LINE (LABEL (NAME foo)) (INSTRUCTION nop) NL)".into()],
+            vec![]
+        )
+    );
+    assert_eq!(
+        on_6502(feature, "foo\n"),
+        (vec!["(LINE (LABEL (NAME foo)) NL)".into()], vec![])
+    );
+    assert_eq!(
+        on_6502(feature, "nop\n"),
+        (vec!["(LINE (INSTRUCTION nop) NL)".into()], vec![])
+    );
+    // ca65 refuses an indented name: only the first column makes a label.
+    assert_eq!(
+        on_6502(feature, " foo nop\n").1,
+        ["1..8 expected `:` after a name to make it a label"]
+    );
+}
+
+#[test]
+fn brackets_as_indirection() {
+    let feature = Feature::BracketAsIndirect;
+    assert_eq!(
+        on_6502(feature, "lda [$12],y\n").0,
+        ["(LINE (INSTRUCTION lda (OPERAND (INDIRECT [ (LITERAL $12) ] , y))) NL)"]
+    );
+    assert_eq!(
+        on_6502(feature, "lda [$12,x]\n").0,
+        ["(LINE (INSTRUCTION lda (OPERAND (INDIRECT [ (LITERAL $12) , x ]))) NL)"]
+    );
+    // Parentheses group a value instead, so `lda ($12)` is zero page.
+    assert_eq!(
+        on_6502(feature, "lda ($12)\n").0,
+        ["(LINE (INSTRUCTION lda (OPERAND (PAREN_EXPR ( (LITERAL $12) )))) NL)"]
+    );
+    assert_eq!(on_6502(feature, "lda [$12\n").1, ["8..8 expected `]`"]);
+    assert_eq!(on_6502(feature, "lda [$12],x\n").1, ["10..11 expected `y`"]);
+    assert_eq!(
+        featured(
+            feature,
+            Profile::CA65_2_19_6502.with_cpu(crate::Cpu::Wdc65816),
+            "lda [$12,s],y\n"
+        ),
+        (
+            vec![
+                "(LINE (INSTRUCTION lda (OPERAND (INDIRECT [ (LITERAL $12) , s ] , y))) NL)".into()
+            ],
+            vec![]
+        )
+    );
+}
+
+#[test]
+fn a_star_assignment_sets_the_pc() {
+    let feature = Feature::PcAssignment;
+    assert_eq!(
+        on_6502(feature, "* = $2000\n"),
+        (
+            vec!["(LINE (PC_ASSIGNMENT * = (LITERAL $2000)) NL)".into()],
+            vec![]
+        )
+    );
+    assert_eq!(
+        on_6502(feature, "foo: * = $2000\n").0,
+        ["(LINE (LABEL (NAME foo) :) (PC_ASSIGNMENT * = (LITERAL $2000)) NL)"]
+    );
+    assert_eq!(on_6502(feature, "* $2000\n").1, ["2..7 expected `=`"]);
+    // Without the feature, `*` cannot start a statement.
+    assert!(!problems("* = $2000\n").is_empty());
+}
+
+#[test]
+fn a_macro_may_take_an_instructions_name() {
+    let feature = Feature::UbiquitousIdents;
+    assert_eq!(
+        on_6502(feature, ".macro lda v\n.endmacro\nlda 5\n"),
+        (
+            vec![
+                "(LINE (COMMAND .macro (NAME lda) (PARAMS v)) NL)".into(),
+                "(LINE (COMMAND .endmacro) NL)".into(),
+                "(LINE (MACRO_CALL lda (ARG (TOKEN_LIST 5))) NL)".into(),
+            ],
+            vec![]
+        )
+    );
+    // With no such macro, the name is still the instruction.
+    assert_eq!(
+        on_6502(feature, "lda 5\n").0,
+        ["(LINE (INSTRUCTION lda (OPERAND (LITERAL 5))) NL)"]
+    );
+    // Without the feature, ca65 refuses the name.
+    assert_eq!(
+        problems(".macro lda v\n.endmacro\n"),
+        ["7..10 an instruction cannot be a macro's name"]
+    );
+}
