@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.29](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.28...lang198x-ca65-v0.0.29) - 2026-11-03
+
+### Added
+
+- read strings and characters under four token features
+- read names and numbers under five token features
+
 ## [0.0.28](https://github.com/lang198x/ca65/compare/lang198x-ca65-v0.0.27...lang198x-ca65-v0.0.28) - 2026-11-03
 
 ### Added
