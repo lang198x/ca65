@@ -7,29 +7,6 @@ use crate::Feature;
 use crate::ast::{Command, View};
 use crate::kinds;
 
-/// Whether this crate reads source the way `feature` asks. The rest are
-/// refused as not supported yet.
-pub(crate) const fn is_read(feature: Feature) -> bool {
-    matches!(
-        feature,
-        Feature::AtInIdentifiers
-            | Feature::BracketAsIndirect
-            | Feature::CComments
-            | Feature::DollarInIdentifiers
-            | Feature::DollarIsPc
-            | Feature::LabelsWithoutColons
-            | Feature::LeadingDotInIdentifiers
-            | Feature::LineContinuations
-            | Feature::LooseCharTerm
-            | Feature::LooseStringTerm
-            | Feature::MissingCharTerm
-            | Feature::PcAssignment
-            | Feature::StringEscapes
-            | Feature::UbiquitousIdents
-            | Feature::UnderlineInNumbers
-    )
-}
-
 /// One feature a `.feature` command turns on or off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Switch {

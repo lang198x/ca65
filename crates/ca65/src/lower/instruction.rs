@@ -13,7 +13,7 @@ use lang198x_syntax::{Diagnostic, SyntaxToken, TextRange};
 use super::expr::{self, invalid};
 use super::{Known, Size, Value};
 use crate::ast::{Instruction, Operand, View};
-use crate::{Cpu, Mode, Profile};
+use crate::{Cpu, Feature, Mode, Profile};
 
 /// Lowers `instruction` as ca65 V2.19 assembles it under `profile`.
 ///
@@ -90,7 +90,22 @@ pub fn instruction(
         (_, "DEA") if cpu.is_mnemonic("DEA") => "DEC".to_owned(),
         _ => written.clone(),
     };
-    let find = |mode: &str| form(cpu, &mnemonic, mode);
+    // With `long_jsr_jmp_rts`, the 65816's `JSR` and `JMP` take a long
+    // address, as `JSL` and `JML` do, and under `.smart` an `RTS` in a far
+    // scope is `RTL`.
+    let long_calls = cpu == Cpu::Wdc65816 && known.has_feature(Feature::LongJsrJmpRts);
+    let mnemonic = if long_calls && mnemonic == "RTS" && known.smart() && known.in_far_scope() {
+        "RTL".to_owned()
+    } else {
+        mnemonic
+    };
+    let find = |mode: &str| {
+        if long_calls && mnemonic == "JSR" && mode == "long" {
+            form(cpu, "JSL", mode)
+        } else {
+            form(cpu, &mnemonic, mode)
+        }
+    };
     let has = |mode: &str| find(mode).is_some();
     let illegal = || {
         invalid(
@@ -215,11 +230,28 @@ pub fn instruction(
         _ => mode,
     };
     // ca65 V2.19 gives the 65816's `JMP` a long form only with the
-    // `long_jsr_jmp_rts` feature, which is off; `JML` is the long jump.
-    if cpu == Cpu::Wdc65816 && mnemonic == "JMP" && mode == "long" {
+    // `long_jsr_jmp_rts` feature; `JML` is the long jump.
+    if cpu == Cpu::Wdc65816 && mnemonic == "JMP" && mode == "long" && !long_calls {
         return Err(illegal());
     }
     let form = find(mode).ok_or_else(illegal)?;
+    let mnemonic = if mnemonic == "JSR" && form.mode == "long" {
+        "JSL".to_owned()
+    } else {
+        mnemonic
+    };
+    // With `force_range`, ca65 keeps an immediate to the bytes it takes,
+    // where it would otherwise refuse one too big.
+    let value =
+        match (form.mode, value) {
+            ("immediate", Some(value)) if known.has_feature(Feature::ForceRange) => {
+                Some(Ir::Lo(Box::new(value)))
+            }
+            ("immediate16", Some(value)) if known.has_feature(Feature::ForceRange) => Some(
+                Ir::Bin(BinOp::And, Box::new(value), Box::new(Ir::Num(0xFFFF))),
+            ),
+            (_, value) => value,
+        };
     // ca65 lets `TMA` read one mapping register at a time, so its value
     // must have one bit set, or none. A value not known yet is left alone.
     if cpu == Cpu::HuC6280

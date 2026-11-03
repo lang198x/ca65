@@ -10,6 +10,7 @@
 //! the same way, and the assembler keeps the map lowering reads through
 //! [`Known::translate`].
 
+use asm198x_ir::{DiagSeverity, Operation};
 use lang198x_syntax::Diagnostic;
 
 use super::Known;
@@ -140,28 +141,23 @@ pub(super) fn setting(
 }
 
 /// Checks a `.feature` line, which the expander has already put in force.
-/// A feature this crate does not read yet is refused as not supported.
 fn features(command: &Command) -> Result<(), Diagnostic> {
-    let switches =
-        crate::features::switches(command).map_err(|(range, message)| invalid(range, &message))?;
-    for switch in switches {
-        match switch.feature {
-            Some(feature) if crate::features::is_read(feature) => {}
-            Some(feature) => {
-                return Err(unsupported(
-                    switch.range,
-                    &format!("the `{}` feature", feature.name()),
-                ));
-            }
-            None => {
-                return Err(unsupported(
-                    switch.range,
-                    "the deprecated `addrsize` feature",
-                ));
-            }
+    crate::features::switches(command)
+        .map(|_| ())
+        .map_err(|(range, message)| invalid(range, &message))
+}
+
+/// The warning ca65 gives for a `.feature` line that names the deprecated
+/// `addrsize`, which does nothing, or `None` for any other line.
+pub(super) fn deprecated(command: &Command) -> Option<Operation> {
+    let word = command.word()?.text().to_ascii_lowercase();
+    let switches = crate::features::switches(command).ok()?;
+    (word == ".feature" && switches.iter().any(|switch| switch.feature.is_none())).then(|| {
+        Operation::Diagnose {
+            severity: DiagSeverity::Warning,
+            message: "Deprecated feature `addrsize`".to_owned(),
         }
-    }
-    Ok(())
+    })
 }
 
 /// Checks `.localchar`'s one argument, the character constant `'@'` or

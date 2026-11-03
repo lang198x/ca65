@@ -241,6 +241,8 @@ pub struct ActiveLine {
     mode: Mode,
     /// The 65816's register widths where the line was read.
     widths: Widths,
+    /// Whether `.smart` was on where the line was read.
+    smart: bool,
     /// How many token functions had run before each `.ref` on the line.
     finished: Finished,
 }
@@ -284,6 +286,13 @@ impl ActiveLine {
     #[must_use]
     pub fn widths(&self) -> Widths {
         self.widths
+    }
+
+    /// Returns whether `.smart` was on where the line was read, before the
+    /// line itself changes it.
+    #[must_use]
+    pub fn smart(&self) -> bool {
+        self.smart
     }
 
     /// Returns how many of the line's token functions had run before each
@@ -387,6 +396,7 @@ fn labelled(line: Line, text: TextId) -> Option<ActiveLine> {
         strings: Vec::new(),
         mode: Mode::of(Profile::CA65_2_19_6502),
         widths: Widths::default(),
+        smart: false,
         finished: Finished::default(),
     })
 }
@@ -650,6 +660,7 @@ impl Expander {
             {
                 label.mode = self.mode;
                 label.widths = self.widths;
+                label.smart = self.smart;
                 self.rest = Some((line, problems, text));
                 return Some(label);
             }
@@ -680,6 +691,7 @@ impl Expander {
         let mut active = self.run(line, text, host)?;
         active.mode = self.mode;
         active.widths = self.widths;
+        active.smart = self.smart;
         active.finished = self.ran.clone();
         if !active.label_only {
             self.track_block(&active.line);
@@ -1107,12 +1119,6 @@ impl Expander {
                 let Ok(switches) = crate::features::switches(command) else {
                     return;
                 };
-                if switches
-                    .iter()
-                    .any(|switch| switch.feature.is_none_or(|f| !crate::features::is_read(f)))
-                {
-                    return;
-                }
                 for switch in switches
                     .into_iter()
                     .filter_map(|s| Some((s.feature?, s.on)))
@@ -1409,6 +1415,7 @@ impl Expander {
                             strings: Vec::new(),
                             mode: Mode::of(Profile::CA65_2_19_6502),
                             widths: Widths::default(),
+                            smart: false,
                             finished: Finished::default(),
                         });
                     }
@@ -1432,6 +1439,7 @@ impl Expander {
                         strings: Vec::new(),
                         mode: Mode::of(Profile::CA65_2_19_6502),
                         widths: Widths::default(),
+                        smart: false,
                         finished: Finished::default(),
                     });
                 }
@@ -1445,6 +1453,7 @@ impl Expander {
             strings: Vec::new(),
             mode: Mode::of(Profile::CA65_2_19_6502),
             widths: Widths::default(),
+            smart: false,
             finished: Finished::default(),
         })
     }
