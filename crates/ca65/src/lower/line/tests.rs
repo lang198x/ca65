@@ -2115,6 +2115,160 @@ fn parsing_features_match_ca65() {
     }
 }
 
+/// Programs measured on ca65 V2.19 under `force_range`, which keeps a value
+/// to the bytes it takes, with the bytes it wrote, or `None` if it refused
+/// the program.
+const FORCED: &[(&str, Option<&str>)] = &[
+    (".byte 300\n", None),
+    (".feature force_range\n.byte 300\n", Some("2c")),
+    (
+        ".feature force_range\n.byte -1, $1ff, 256\n",
+        Some("ffff00"),
+    ),
+    (".feature force_range\n.byte -129\n", Some("7f")),
+    (".feature force_range\n.byte \"ab\", 300\n", Some("61622c")),
+    (".feature force_range\n.word $12345, -1\n", Some("4523ffff")),
+    (".word $12345\n", None),
+    (".feature force_range\n.addr $12345\n", Some("4523")),
+    (".feature force_range\n.dbyt $12345, -1\n", Some("2345ffff")),
+    (".feature force_range\n.faraddr $1234567\n", Some("674523")),
+    (".faraddr $1234567\n", None),
+    (".feature force_range\n.dword -1\n", Some("ffffffff")),
+    // The harness does not check an immediate's range, so `lda #300`
+    // without the feature is in Asm198x's verdicts.
+    (".feature force_range\nlda #300\n", Some("a92c")),
+    (".feature force_range\nlda #-1\n", Some("a9ff")),
+    (".feature force_range\nldx #$1ff\n", Some("a2ff")),
+    (".feature force_range\nadc #300\n", Some("692c")),
+    (".feature force_range\nlda #<$1234\n", Some("a934")),
+    (".feature force_range\n.byte v\nv = 300\n", Some("2c")),
+    (".feature force_range\nlda #v\nv = 300\n", Some("a92c")),
+    (".byte v\nv = 300\n", None),
+    // An address keeps the size it has: only data and immediates are kept.
+    (".feature force_range\nlda 300\n", Some("ad2c01")),
+    (".feature force_range\n.res 2, 300\n", None),
+    (
+        ".feature force_range\n.byte 1, 2\n.feature force_range -\n.byte 3\n",
+        Some("010203"),
+    ),
+    (
+        ".feature force_range\n.feature force_range -\n.byte 300\n",
+        None,
+    ),
+    // A macro's lines are kept under the features in force where it is
+    // called, not where it was defined.
+    (
+        ".feature force_range\n.macro m\n.byte 300\n.endmacro\n.feature force_range -\nm\n",
+        None,
+    ),
+    (
+        ".macro m\n.byte 300\n.endmacro\n.feature force_range\nm\n",
+        Some("2c"),
+    ),
+];
+
+#[test]
+fn force_range_matches_ca65() {
+    for &(source, hex) in FORCED {
+        let got = assemble(source);
+        assert_eq!(got.as_deref().ok(), hex, "{source:?}: {got:?}");
+    }
+}
+
+/// What the last line of `source` lowers to on the 65816, with `far` saying
+/// whether the scope it is in is far.
+fn last_on_65816(source: &str, far: bool) -> Result<Option<Operation>, String> {
+    struct Scoped<'m>(&'m Mini, bool);
+    impl Known for Scoped<'_> {
+        fn name(&self, name: &str) -> Value {
+            self.0.name(name)
+        }
+        fn pc(&self) -> Value {
+            self.0.pc()
+        }
+        fn in_far_scope(&self) -> bool {
+            self.1
+        }
+    }
+    let profile = Profile::CA65_2_19_6502.with_cpu(crate::Cpu::Wdc65816);
+    let mut expander = Expander::new(source, profile).map_err(|e| e.to_string())?;
+    let mut mini = Mini::default();
+    let mut last = None;
+    while let Some(active) = expander.next_line(&mut mini) {
+        let lowered =
+            line(&active, profile, &Scoped(&mini, far)).map_err(|d| d.message().to_owned())?;
+        last = lowered.items.into_iter().last().and_then(|item| item.op);
+    }
+    Ok(last)
+}
+
+/// The mnemonic and mode of the last line of `source` on the 65816.
+fn called(source: &str, far: bool) -> Result<(String, &'static str), String> {
+    match last_on_65816(source, far)? {
+        Some(Operation::Instruction { mnemonic, mode, .. }) => Ok((mnemonic, mode)),
+        Some(_) => Err("another operation".to_owned()),
+        None => Err("no operation".to_owned()),
+    }
+}
+
+#[test]
+fn long_jsr_jmp_rts_takes_long_addresses() {
+    const ON: &str = ".feature long_jsr_jmp_rts\n";
+    let long = |text: &str| called(&format!("{ON}{text}\n"), false);
+    assert_eq!(long("jsr $123456"), Ok(("JSL".into(), "long")));
+    assert_eq!(long("jmp $123456"), Ok(("JMP".into(), "long")));
+    assert_eq!(long("jsr f:$1234"), Ok(("JSL".into(), "long")));
+    assert_eq!(long("jsr $1234"), Ok(("JSR".into(), "absolute")));
+    assert_eq!(long("jsr ($1234,x)"), Ok(("JSR".into(), "(absolute,x)")));
+    assert!(long("jsr a:$123456").is_err());
+    // Without the feature, ca65 refuses a long `jsr` or `jmp`.
+    assert!(called("jsr $123456\n", false).is_err());
+    assert!(called("jmp f:$1234\n", false).is_err());
+}
+
+#[test]
+fn rts_is_rtl_in_a_far_scope_under_smart() {
+    let rts = |source: &str, far: bool| called(source, far).map(|(mnemonic, _)| mnemonic);
+    let both = ".smart\n.feature long_jsr_jmp_rts\nrts\n";
+    assert_eq!(rts(both, true), Ok("RTL".into()));
+    assert_eq!(rts(both, false), Ok("RTS".into()));
+    assert_eq!(
+        rts(".feature long_jsr_jmp_rts\nrts\n", true),
+        Ok("RTS".into())
+    );
+    assert_eq!(rts(".smart\nrts\n", true), Ok("RTS".into()));
+    assert_eq!(
+        rts(".smart\n.feature long_jsr_jmp_rts\n.smart -\nrts\n", true),
+        Ok("RTS".into())
+    );
+}
+
+#[test]
+fn addrsize_is_deprecated() {
+    for source in [
+        ".feature addrsize\n",
+        ".feature addrsize -\n",
+        ".feature force_range, addrsize\n",
+    ] {
+        let lowered = first(source).expect("accepted");
+        let ops: Vec<_> = lowered
+            .items
+            .into_iter()
+            .filter_map(|item| item.op)
+            .collect();
+        let warned = matches!(
+            ops.as_slice(),
+            [Operation::Diagnose {
+                severity: DiagSeverity::Warning,
+                message,
+            }] if message == "Deprecated feature `addrsize`"
+        );
+        assert!(warned, "{source}");
+    }
+    let lowered = first(".feature force_range\n").expect("accepted");
+    assert!(lowered.items.iter().all(|item| item.op.is_none()));
+}
+
 #[test]
 fn feature_says_what_is_wrong() {
     for (source, message) in [
@@ -2123,14 +2277,6 @@ fn feature_says_what_is_wrong() {
         (".feature dollar_is_pc,\n", "Expected an identifier"),
         (".feature dollar_is_pc 1\n", "Expected ON or OFF"),
         (".feature dollar_is_pc + x\n", "Expected end-of-line"),
-        (
-            ".feature org_per_seg\n",
-            "the `org_per_seg` feature is not lowered yet",
-        ),
-        (
-            ".feature addrsize\n",
-            "the deprecated `addrsize` feature is not lowered yet",
-        ),
     ] {
         let problem = first(source).err().map(|d| d.message().to_owned());
         assert_eq!(problem.as_deref(), Some(message), "{source}");

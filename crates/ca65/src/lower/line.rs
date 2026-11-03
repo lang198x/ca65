@@ -278,7 +278,7 @@ pub fn line(line: &ActiveLine, profile: Profile, known: &dyn Known) -> Result<Lo
                             None => match setting(&command, line, known)? {
                                 Some(change) => {
                                     cpu = change;
-                                    None
+                                    super::settings::deprecated(&command)
                                 }
                                 None => match charmap(&command, known)? {
                                     Some(change) => {
@@ -460,6 +460,17 @@ impl Known for OnLine<'_> {
             Some(line) => line.mode().has(feature),
             None => self.known.has_feature(feature),
         }
+    }
+
+    fn smart(&self) -> bool {
+        match self.line {
+            Some(line) => line.smart(),
+            None => self.known.smart(),
+        }
+    }
+
+    fn in_far_scope(&self) -> bool {
+        self.known.in_far_scope()
     }
 
     fn string(&self, token: &SyntaxToken) -> Option<(Vec<u8>, Vec<bool>)> {
@@ -790,6 +801,9 @@ fn command_op(
     let values = || command.values().collect::<Vec<Expr>>();
     // ca65's `*` in a list is the address of the value it is in, so the
     // second `*` in `.word *, *` is two more than the first.
+    // With `force_range`, ca65 keeps each value to the bytes it takes,
+    // where it would otherwise refuse one too big.
+    let forced = known.has_feature(crate::Feature::ForceRange);
     let sized = |width: u8, big_endian: bool, values: Vec<Ir>| Operation::Sized {
         width,
         big_endian,
@@ -798,6 +812,7 @@ fn command_op(
             .into_iter()
             .zip((0_i64..).step_by(usize::from(width)))
             .map(|(value, offset)| at_offset(value, offset))
+            .map(|value| if forced { kept_to(width, value) } else { value })
             .collect(),
     };
     let lowered = |values: Vec<Expr>| {
@@ -914,6 +929,18 @@ fn command_op(
         ".assert" => assertion(command, line, known)?,
         other => return Err(unsupported(range, &format!("`{other}`"))),
     }))
+}
+
+/// `value` kept to `width` bytes, as ca65's `force_range` keeps it: the low
+/// byte, word, three bytes or four bytes.
+fn kept_to(width: u8, value: Ir) -> Ir {
+    match width {
+        1 => Ir::Lo(Box::new(value)),
+        _ => {
+            let mask = (1_i64 << (8 * u32::from(width.min(4)))) - 1;
+            Ir::Bin(BinOp::And, Box::new(value), Box::new(Ir::Num(mask)))
+        }
+    }
 }
 
 /// A message to say, from the string `value`.

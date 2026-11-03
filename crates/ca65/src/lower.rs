@@ -204,6 +204,20 @@ pub trait Known {
         false
     }
 
+    /// Whether `.smart` is on for the line. Lowering a line answers this
+    /// from the line; the default is off.
+    fn smart(&self) -> bool {
+        false
+    }
+
+    /// Whether the innermost scope open on the line is far, as
+    /// `.proc p: far` opens. With the `long_jsr_jmp_rts` feature and
+    /// `.smart`, ca65 makes `rts` there the 65816's `rtl`. The assembler
+    /// follows scopes; the default is no.
+    fn in_far_scope(&self) -> bool {
+        false
+    }
+
     /// The bytes a string `token` on the line holds, with which of them
     /// are raw, which the character map leaves alone. Lowering a line
     /// answers this from the line, which keeps the bytes of a string whose
