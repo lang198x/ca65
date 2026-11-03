@@ -1724,6 +1724,139 @@ fn token_features_match_ca65() {
     }
 }
 
+/// Programs measured on ca65 V2.19 that turn on `.feature`s changing how
+/// strings and character constants are read, with the bytes it wrote, or
+/// `None` if it refused the program.
+const STRING_FEATURES: &[(&str, Option<&str>)] = &[
+    (".feature loose_char_term\nlda #\"a\"\n", Some("a961")),
+    ("lda #\"a\"\n", None),
+    // ca65: Expected an expression but found ‘"a"’
+    (".feature loose_char_term\n.byte \"a\"+1\n", None),
+    // ca65: Expected ‘end-of-line’ but found ‘+’
+    (".feature loose_char_term\n.word \"a\"+1\n", Some("6200")),
+    (".feature loose_char_term\n.byte (\"a\")\n", Some("61")),
+    (".feature loose_char_term\n.word \"ab\"+1\n", None),
+    // ca65: Expected an expression but found ‘"ab"’
+    (".feature loose_char_term\n.byte 'a\"\n", None),
+    // ca65: Illegal character constant
+    (
+        ".feature loose_char_term\n.byte .match(\"a\", 'a'), .strlen(\"a\")\n",
+        Some("0001"),
+    ),
+    (
+        ".feature loose_string_term\n.byte 'abc', 'a'+1, '', 'a\"b'\n",
+        Some("61626362612262"),
+    ),
+    (
+        ".feature loose_string_term\n.byte .strlen('abc'), .match(\"a\", 'a'), .match('ab', \"ab\")\n",
+        Some("030001"),
+    ),
+    (".feature loose_string_term\n.byte \"abc'\n", None),
+    // ca65: Newline in string constant
+    (".feature loose_string_term\nlda #'a'\n", Some("a961")),
+    (".feature missing_char_term\nlda #'a\n", Some("a961")),
+    (
+        ".feature missing_char_term\n.byte 'a, 2, 'b'\n",
+        Some("610262"),
+    ),
+    (".feature missing_char_term\n.byte 'ab\n", None),
+    // ca65: Expected ‘end-of-line’ but found ‘b’
+    (".feature missing_char_term\n.byte '\n", None),
+    // ca65: Newline in string constant
+    (
+        ".feature missing_char_term, loose_string_term\n.byte 'a\n",
+        None,
+    ),
+    // ca65: Newline in string constant
+    (
+        ".feature string_escapes\n.byte \"a\\nb\", \"\\t\\r\\n\\\\\\\"\\'\", \"\\a\\b\\e\\f\\v\\?\"\n",
+        Some("610a62090d0a5c222707081b0c0b3f"),
+    ),
+    (
+        ".feature string_escapes\n.byte \"\\x41\\x4a\\X4A\\x414\", \"\\0\\101\\0a\", \"\\xff\"\n",
+        Some("414a4a413400410061ff"),
+    ),
+    (".feature string_escapes\n.byte \"\\x4\"\n", None),
+    // ca65: Unsupported escape sequence in string constant
+    (".feature string_escapes\n.byte \"\\q\"\n", None),
+    // ca65: Unsupported escape sequence in string constant
+    (".feature string_escapes\n.byte \"\\8\"\n", None),
+    // ca65: Unsupported escape sequence in string constant
+    (".feature string_escapes\n.byte \"\\777\"\n", None),
+    // ca65: Octal character constant out of range
+    (".feature string_escapes\n.byte \"a\\\"\n", None),
+    // ca65: Newline in string constant
+    (
+        ".feature string_escapes\n.byte '\\n', '\\x41'\n",
+        Some("0a41"),
+    ),
+    (".feature string_escapes\nlda #'\\''\n", None),
+    // ca65: Illegal character constant
+    (".byte \"a\\nb\", '\\'\n", Some("615c6e625c")),
+    (
+        ".feature string_escapes\n.byte .strlen(\"a\\nb\"), .match(\"\\n\", \"\\x0a\")\n",
+        Some("0301"),
+    ),
+    (
+        ".feature string_escapes\n.define s \"a\\tb\"\n.byte s\n",
+        Some("610962"),
+    ),
+    (
+        ".macro m\n.byte \"x\\ny\"\n.endmacro\n.feature string_escapes\nm\n",
+        Some("785c6e79"),
+    ),
+    (
+        ".feature string_escapes\n.macro m\n.byte \"x\\ny\"\n.endmacro\n.feature string_escapes -\nm\n",
+        Some("780a79"),
+    ),
+    // A string's `\\x` and octal escapes skip the character map; a
+    // character's never do.
+    (
+        ".feature string_escapes\n.charmap $0a, $99\n.byte \"\\n\\x0a\\12\", '\\n', '\\x0a'\n",
+        Some("990a0a9999"),
+    ),
+    (
+        ".feature string_escapes, loose_char_term\n.charmap $0a, $99\nlda #\"\\x0a\"\nlda #\"\\n\"\n",
+        Some("a999a999"),
+    ),
+    (
+        ".feature string_escapes, loose_string_term\n.byte 'a\\'b', '\\''\n",
+        Some("61276227"),
+    ),
+    (
+        ".feature string_escapes, loose_char_term\nlda #\"\\n\"\n",
+        Some("a90a"),
+    ),
+    (
+        ".feature string_escapes\n.byte .sprintf(\"%s|\", \"a\\nb\")\n",
+        Some("610a627c"),
+    ),
+    (
+        ".feature string_escapes\n.asciiz \"x\\ty\"\n",
+        Some("78097900"),
+    ),
+    (".feature string_escapes\n.literal \"\\n\"\n", Some("0a")),
+];
+
+#[test]
+fn string_features_match_ca65() {
+    for &(source, hex) in STRING_FEATURES {
+        let got = assemble(source);
+        assert_eq!(got.as_deref().ok(), hex, "{source:?}: {got:?}");
+    }
+}
+
+#[test]
+fn a_backslash_constant_follows_ca65s_intent() {
+    // A named divergence. ca65 V2.19 refuses `'\'` with `string_escapes` as
+    // an illegal character constant, though its scanner's special case for
+    // it says it means a backslash; see `quoted::character`.
+    assert_eq!(
+        assemble(".feature string_escapes\n.byte '\\'\n").as_deref(),
+        Ok("5c")
+    );
+}
+
 #[test]
 fn feature_says_what_is_wrong() {
     for (source, message) in [

@@ -29,12 +29,14 @@ pub(super) struct Kept {
 }
 
 impl Kept {
-    /// What to keep of a string holding `bytes`, with `raw` marking the
-    /// raw ones, or `None` if its text holds it all: every byte below 128
-    /// and none raw.
-    pub(super) fn of(bytes: &[u8], raw: Option<&[bool]>) -> Option<Self> {
+    /// What to keep of a string spelt `text` and holding `bytes`, with
+    /// `raw` marking the raw ones, or `None` if its text holds it all: the
+    /// text between its quotes is its bytes, and none is raw. Escapes, and
+    /// bytes a token function made above 127, are kept.
+    pub(super) fn of(text: &str, bytes: &[u8], raw: Option<&[bool]>) -> Option<Self> {
         let raw = raw.map_or_else(|| vec![false; bytes.len()], <[bool]>::to_vec);
-        (!bytes.is_ascii() || raw.contains(&true)).then(|| Self {
+        let plain = crate::quoted::unquoted(text).as_bytes() == bytes && !raw.contains(&true);
+        (!plain).then(|| Self {
             bytes: bytes.to_vec(),
             raw,
         })
@@ -145,12 +147,27 @@ impl Made {
         );
     }
 
+    /// Adds a string token, spelt `text`, holding `bytes` with `raw`
+    /// marking the raw ones. They are kept beside the text whenever the
+    /// text alone would not give them, as with escapes.
+    pub(super) fn string(
+        &mut self,
+        text: &str,
+        kind: SyntaxKind,
+        origin: Origin,
+        bytes: Vec<u8>,
+        raw: Vec<bool>,
+    ) {
+        let kept = Kept::of(text, &bytes, Some(&raw));
+        self.push_bytes(text, kind, origin, kept);
+    }
+
     /// Adds `piece`.
     pub(super) fn piece(&mut self, piece: &Piece) {
         let kept = piece
             .bytes
             .as_deref()
-            .and_then(|bytes| Kept::of(bytes, piece.raw.as_deref()));
+            .and_then(|bytes| Kept::of(&piece.text, bytes, piece.raw.as_deref()));
         self.push_bytes(&piece.text, piece.kind, piece.origin, kept);
     }
 

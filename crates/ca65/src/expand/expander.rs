@@ -237,8 +237,8 @@ pub struct ActiveLine {
     label_only: bool,
     /// The made strings on the line whose text cannot hold their bytes.
     strings: MadeStrings,
-    /// The CPU in force where the line was read.
-    cpu: Cpu,
+    /// The mode in force where the line was read, with its CPU.
+    mode: Mode,
     /// The 65816's register widths where the line was read.
     widths: Widths,
     /// How many token functions had run before each `.ref` on the line.
@@ -269,7 +269,14 @@ impl ActiveLine {
     /// and its kin choose. The line is lowered for it.
     #[must_use]
     pub fn cpu(&self) -> Cpu {
-        self.cpu
+        self.mode.cpu()
+    }
+
+    /// Returns the mode in force where the line was read: its CPU, how
+    /// names are read and the `.feature`s that are on.
+    #[must_use]
+    pub fn mode(&self) -> Mode {
+        self.mode
     }
 
     /// Returns the 65816's register widths where the line was read, before
@@ -373,7 +380,7 @@ fn labelled(line: Line, text: TextId) -> Option<ActiveLine> {
         text,
         label_only: true,
         strings: Vec::new(),
-        cpu: Cpu::Mos6502,
+        mode: Mode::of(Profile::CA65_2_19_6502),
         widths: Widths::default(),
         finished: Finished::default(),
     })
@@ -636,7 +643,7 @@ impl Expander {
                 && macros::command_word(&line).as_deref() != Some(".define")
                 && let Some(mut label) = labelled(line.clone(), text)
             {
-                label.cpu = self.mode.cpu();
+                label.mode = self.mode;
                 label.widths = self.widths;
                 self.rest = Some((line, problems, text));
                 return Some(label);
@@ -666,7 +673,7 @@ impl Expander {
             self.diagnostics.push((text, problem));
         }
         let mut active = self.run(line, text, host)?;
-        active.cpu = self.mode.cpu();
+        active.mode = self.mode;
         active.widths = self.widths;
         active.finished = self.ran.clone();
         if !active.label_only {
@@ -903,46 +910,52 @@ impl Expander {
     /// with a dot, every line of a file is, since a file is parsed with its
     /// names as written.
     fn is_stale(now: Mode, mode: Mode, text: TextId) -> bool {
-        matches!(text, TextId::File(_)) && (mode != now || now.renames())
+        matches!(text, TextId::File(_)) && (mode != now || now.rereads())
     }
 
-    /// `line`, from `text`, lexed and parsed again in the current mode,
-    /// with its names in upper case after `.case off`.
+    /// `line`, from the file `text`, lexed and parsed again in the current
+    /// mode. Its names are read as the mode reads them, in upper case after
+    /// `.case off`, and a string whose escapes change its bytes keeps them.
+    /// A file's line is a stretch of its text, so lexing that stretch again
+    /// finds the tokens the mode makes of it.
     fn reread(&mut self, line: &Line, text: TextId) -> Option<(Line, Vec<Diagnostic>, TextId)> {
+        let range = line.syntax().text_range();
+        let source = line.syntax().text().to_string();
+        let lexed = lex(&source, self.mode);
+        let escapes = self.mode.has(crate::Feature::StringEscapes);
         let mut builder = Made::new();
-        for token in line
-            .syntax()
-            .descendants()
-            .filter_map(SyntaxElement::into_token)
-        {
-            let from = Span::new(text, token.text_range());
+        let base = range.start().to_usize();
+        let mut start = 0;
+        for token in lexed.tokens() {
+            let end = start + token.len().to_usize();
+            let spelt = source.get(start..end)?;
+            let at = TextSize::try_from(base + start).ok()?;
+            let from = Span::new(text, TextRange::at(at, token.len())?);
             let origin = self.copied(from);
-            // A token is folded as it was lexed before, so a dotted word
-            // that is no command, which `leading_dot_in_identifiers` makes a
-            // name, is folded too.
-            let name = match token.kind() {
-                kinds::IDENT | kinds::CHEAP_IDENT => true,
-                kinds::CONTROL => {
-                    self.mode.has(crate::Feature::LeadingDotInIdentifiers)
-                        && !crate::is_control_command(token.text())
+            start = end;
+            match token.kind() {
+                kinds::IDENT | kinds::CHEAP_IDENT => {
+                    // ca65 changes only ASCII letters, so the text keeps
+                    // its length.
+                    builder.push(&self.mode.read_name(spelt), token.kind(), origin);
                 }
-                _ => false,
-            };
-            if self.mode.renames() && name {
-                builder.push(&self.mode.read_name(token.text()), token.kind(), origin);
-            } else {
-                builder.token(&token, from, origin, &self.strings);
+                kinds::STRING => {
+                    let quote = spelt.chars().next().unwrap_or('"');
+                    let quoted = crate::quoted::string(spelt, quote, escapes);
+                    builder.string(spelt, token.kind(), origin, quoted.bytes, quoted.raw);
+                }
+                kind => builder.push(spelt, kind, origin),
             }
         }
-        let (builder, _, strings) = builder.finish();
+        let (builder, tokens, strings) = builder.finish();
         let expansion = builder.finish().ok()?;
         let made = expansion.text().to_owned();
         let id = TextId::Expansion(self.provenance.add(expansion).ok()?);
         self.strings.add(id, strings);
-        let source = self.load(id, &made, None, None, true).ok()?;
-        let reparsed = source.lines.first().cloned()?;
-        let problems = source.line_problems.into_iter().flatten().collect();
-        self.report_lexical(id, Some(source.lexical.into_iter().flatten().collect()));
+        let reread = self.load(id, &made, Some(tokens), None, false).ok()?;
+        let reparsed = reread.lines.first().cloned()?;
+        let problems = reread.line_problems.into_iter().flatten().collect();
+        self.report_lexical(id, Some(lexed.diagnostics().to_vec()));
         Some((reparsed, problems, id))
     }
 
@@ -1311,7 +1324,7 @@ impl Expander {
                             text,
                             label_only: true,
                             strings: Vec::new(),
-                            cpu: Cpu::Mos6502,
+                            mode: Mode::of(Profile::CA65_2_19_6502),
                             widths: Widths::default(),
                             finished: Finished::default(),
                         });
@@ -1334,7 +1347,7 @@ impl Expander {
                         text,
                         label_only: true,
                         strings: Vec::new(),
-                        cpu: Cpu::Mos6502,
+                        mode: Mode::of(Profile::CA65_2_19_6502),
                         widths: Widths::default(),
                         finished: Finished::default(),
                     });
@@ -1347,7 +1360,7 @@ impl Expander {
             text,
             label_only: false,
             strings: Vec::new(),
-            cpu: Cpu::Mos6502,
+            mode: Mode::of(Profile::CA65_2_19_6502),
             widths: Widths::default(),
             finished: Finished::default(),
         })

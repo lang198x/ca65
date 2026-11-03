@@ -16,6 +16,10 @@ pub(crate) const fn is_read(feature: Feature) -> bool {
             | Feature::DollarInIdentifiers
             | Feature::DollarIsPc
             | Feature::LeadingDotInIdentifiers
+            | Feature::LooseCharTerm
+            | Feature::LooseStringTerm
+            | Feature::MissingCharTerm
+            | Feature::StringEscapes
             | Feature::UnderlineInNumbers
     )
 }

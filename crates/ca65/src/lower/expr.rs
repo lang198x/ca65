@@ -297,18 +297,41 @@ fn literal_value(token: &SyntaxToken, known: &dyn Known) -> Result<Ir, Diagnosti
         kinds::NUMBER => crate::number::value(text)
             .map(Ir::Num)
             .ok_or_else(|| invalid(range, "this number is too large")),
+        // A character goes through the character map, whatever escape
+        // wrote it, as in ca65.
         kinds::CHAR => {
-            let inner = text.strip_prefix('\'').unwrap_or(text);
-            let inner = inner.strip_suffix('\'').unwrap_or(inner);
-            let mut bytes = inner.bytes();
-            match (bytes.next(), bytes.next()) {
-                // A character goes through the character map.
-                (Some(byte), None) => Ok(Ir::Num(i64::from(known.translate(byte)))),
-                _ => Err(invalid(range, "a character is one byte")),
-            }
+            let byte = character(text).ok_or_else(|| invalid(range, "a character is one byte"))?;
+            Ok(Ir::Num(i64::from(known.translate(byte))))
         }
         kinds::STAR | kinds::DOLLAR => Ok(Ir::Pc),
+        // With `loose_char_term`, a string of one byte is a character.
+        kinds::STRING if known.has_feature(crate::Feature::LooseCharTerm) => {
+            let bytes = known.string(token).map_or_else(
+                || crate::quoted::unquoted(text).as_bytes().to_vec(),
+                |(bytes, _)| bytes,
+            );
+            match bytes.as_slice() {
+                [byte] => Ok(Ir::Num(i64::from(known.translate(*byte)))),
+                _ => Err(invalid(range, "a string is not a value here")),
+            }
+        }
         _ => Err(invalid(range, "a string is not a value here")),
+    }
+}
+
+/// The byte a character constant spelt `text` holds. A constant longer than one character holds an escape, which only
+/// `string_escapes` lets the lexer make; `'\''`, which `loose_string_term`
+/// allows, is a quote, and `'\'` a backslash, as ca65 reads them.
+fn character(text: &str) -> Option<u8> {
+    let as_string = crate::quoted::string(text, '\'', true);
+    let quoted = if as_string.problem.is_none() && as_string.len == text.len() {
+        as_string
+    } else {
+        crate::quoted::character(text, true, true)
+    };
+    match quoted.bytes.as_slice() {
+        [byte] if quoted.problem.is_none() => Some(*byte),
+        _ => None,
     }
 }
 

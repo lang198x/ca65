@@ -32,7 +32,7 @@
 
 use lang198x_syntax::{Diagnostic, DiagnosticKind, SyntaxKind, TextRange, TextSize};
 
-use crate::{Feature, Mode, is_control_command, kinds};
+use crate::{Feature, Mode, is_control_command, kinds, quoted};
 
 /// One token: its kind and how many bytes of text it covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -178,8 +178,8 @@ impl<'t> Lexer<'t> {
             // `.localchar` chooses which of `@` and `?` starts a cheap local
             // or an unnamed label. The other is not allowed anywhere.
             c if c == mode.local() => at(rest, mode),
-            '\'' => (kinds::CHAR, self.character(rest)),
-            '"' => (kinds::STRING, self.string(rest)),
+            '\'' => self.single_quoted(rest, mode),
+            '"' => (kinds::STRING, self.string(rest, mode)),
             ':' => colon(rest),
             _ if starts_name(c) => name(rest, mode),
             _ => match operator(rest) {
@@ -279,37 +279,77 @@ impl<'t> Lexer<'t> {
         (kinds::CONTROL, len)
     }
 
-    /// A character constant: one byte between single quotes. Anything else
-    /// runs to the end of the line, as it does in ca65, and is reported.
-    fn character(&mut self, rest: &str) -> usize {
-        let mut chars = rest[1..].chars();
-        let well_formed = matches!(
-            (chars.next(), chars.next()),
-            // ca65 ends a character constant at a zero byte, as its scanner
-            // reads one with a terminator of zero.
-            (Some(c), Some('\'')) if c.is_ascii() && !matches!(c, '\n' | '\r' | '\0')
+    /// What a single quote starts: a character constant, or, with
+    /// `loose_string_term`, a string, which is a character constant when it
+    /// holds one byte, as ca65 reads it.
+    fn single_quoted(&mut self, rest: &str, mode: Mode) -> (SyntaxKind, usize) {
+        let escapes = mode.has(Feature::StringEscapes);
+        if mode.has(Feature::LooseStringTerm) {
+            let quoted = quoted::string(rest, '\'', escapes);
+            self.quoted_problem(&quoted, rest);
+            let kind = if quoted.bytes.len() == 1 {
+                kinds::CHAR
+            } else {
+                kinds::STRING
+            };
+            return (kind, quoted.len);
+        }
+        (kinds::CHAR, self.character(rest, mode))
+    }
+
+    /// A character constant: one byte between single quotes, or one escape
+    /// with `string_escapes`. A malformed one runs to the end of the line,
+    /// as it does in ca65, and is reported.
+    fn character(&mut self, rest: &str, mode: Mode) -> usize {
+        let quoted = quoted::character(
+            rest,
+            mode.has(Feature::StringEscapes),
+            mode.has(Feature::MissingCharTerm),
         );
+        // ca65 ends a character constant at a zero byte, as its scanner
+        // reads one with a terminator of zero, and holds bytes, not
+        // characters.
+        let well_formed = quoted.problem.is_none()
+            && match (quoted.bytes.as_slice(), quoted.raw.as_slice()) {
+                // A `\x` or octal escape may give any byte.
+                ([_], [true]) => true,
+                ([byte], _) => byte.is_ascii() && *byte != 0,
+                _ => false,
+            };
         if well_formed {
-            return 3;
+            return quoted.len;
         }
         let len = line_rest(rest);
-        self.report(
-            len,
-            "a character constant holds exactly one character".into(),
-        );
+        // A bad escape says so; anything else is a constant that does not
+        // hold exactly one character.
+        let message = match quoted.problem {
+            Some(problem) if problem.contains("escape") || problem.contains("Octal") => {
+                problem.to_owned()
+            }
+            _ => "a character constant holds exactly one character".into(),
+        };
+        self.report(len, message);
         len
     }
 
-    /// A string, from its opening quote to its closing one. If the line ends
-    /// first, the string stops there and is reported.
-    fn string(&mut self, rest: &str) -> usize {
-        let line = line_rest(rest);
-        match rest[1..line].find('"') {
-            Some(close) => close + 2,
-            None => {
-                self.report(line, "this string has no closing \"".into());
-                line
+    /// A string, from its opening quote to its closing one, with escapes
+    /// if `string_escapes` is on. If the line ends first, the string stops
+    /// there and is reported.
+    fn string(&mut self, rest: &str, mode: Mode) -> usize {
+        let quoted = quoted::string(rest, '"', mode.has(Feature::StringEscapes));
+        self.quoted_problem(&quoted, rest);
+        quoted.len
+    }
+
+    /// Reports what is wrong with a string read from `rest`, if anything.
+    fn quoted_problem(&mut self, quoted: &quoted::Quoted, rest: &str) {
+        match quoted.problem {
+            Some("Newline in string constant") => {
+                let close = &rest[..rest.chars().next().map_or(1, char::len_utf8)];
+                self.report(quoted.len, format!("this string has no closing {close}"));
             }
+            Some(problem) => self.report(quoted.len, problem.to_owned()),
+            None => {}
         }
     }
 }
