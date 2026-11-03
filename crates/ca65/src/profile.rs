@@ -416,6 +416,12 @@ impl Mode {
         }
     }
 
+    /// The settings that decide where a line ends: `line_continuations`
+    /// and `c_comments`. Text parsed under other ones is parsed again.
+    pub(crate) const fn joins(self) -> u32 {
+        self.features & (Feature::LineContinuations.bit() | Feature::CComments.bit())
+    }
+
     /// Whether a line read in this mode may hold names or strings its text
     /// does not spell as they are read: names after `.case off`, names
     /// starting with a dot, and strings with escapes. Such a line is read

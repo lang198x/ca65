@@ -13,9 +13,11 @@ pub(crate) const fn is_read(feature: Feature) -> bool {
     matches!(
         feature,
         Feature::AtInIdentifiers
+            | Feature::CComments
             | Feature::DollarInIdentifiers
             | Feature::DollarIsPc
             | Feature::LeadingDotInIdentifiers
+            | Feature::LineContinuations
             | Feature::LooseCharTerm
             | Feature::LooseStringTerm
             | Feature::MissingCharTerm

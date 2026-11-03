@@ -561,3 +561,33 @@ fn each_ref_notes_the_functions_run_before_it() {
     let (_, lines) = active_lines(".byte .ref(v)\n");
     assert_eq!(lines[0].finished(), &Finished::default());
 }
+
+#[test]
+fn lines_joined_after_linecont_trace_to_the_file() {
+    // The rest of the file is parsed again after `.linecont +`, and every
+    // line still traces to where it was written.
+    let source = ".linecont +\n.byte 1, \\\n  2\n nop\n.if 1\n";
+    let (expander, lines) = active_lines(source);
+    let joined = lines
+        .iter()
+        .find(|l| l.line().syntax().text().to_string().contains(".byte"))
+        .expect("the joined line");
+    let at = expander.locate(lang198x_syntax::Span::new(
+        joined.text(),
+        token(joined, "2").text_range(),
+    ));
+    assert_eq!(at.map(|at| (at.line, at.column)), Some((3, 3)));
+    let nop = lines
+        .iter()
+        .find(|l| l.line().syntax().text().to_string().contains("nop"))
+        .expect("the nop");
+    let at = expander.locate(nop.span()).expect("a place");
+    assert_eq!((at.line, at.column), (4, 1));
+    // A conditional the reread text opens is still reported unclosed at
+    // the file's end.
+    let reported = expander
+        .diagnostics()
+        .iter()
+        .any(|(_, d)| d.message().contains("never closed"));
+    assert!(reported);
+}

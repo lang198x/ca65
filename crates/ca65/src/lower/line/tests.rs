@@ -1857,6 +1857,120 @@ fn a_backslash_constant_follows_ca65s_intent() {
     );
 }
 
+/// Programs measured on ca65 V2.19 that join lines with `.linecont` or
+/// `c_comments`, with the bytes it wrote, or `None` if it refused the
+/// program.
+const JOINING: &[(&str, Option<&str>)] = &[
+    (".linecont +\n.byte 1, \\\n2\n", Some("0102")),
+    (".linecont +\n.byte 1, \\   \n2\n", Some("0102")),
+    (".linecont +\n.byte 1, \\ 3\n", None),
+    // ca65: EOL expected.
+    (".linecont +\n.byte 1 ; c \\\n.byte 2\n", Some("0102")),
+    (".linecont +\n.byte \"a\\\nb\"\n", None),
+    // ca65: Newline in string constant
+    (".linecont +\nlda\\\n#1\n", Some("a901")),
+    (".linecont +\nld\\\na #1\n", None),
+    // ca65: Expected ‘:’ after identifier to form a label but found ‘A’
+    (".linecont +\n.byte 1\\\n", Some("01")),
+    (".linecont\n.byte 1, \\\n2\n", Some("0102")),
+    (".linecont on\n.byte 1, \\\n2\n", Some("0102")),
+    (".linecont +\n.linecont -\n.byte 1, \\\n2\n", None),
+    // ca65: Invalid input character: 0x5C
+    (".byte 1, \\\n2\n", None),
+    // ca65: Invalid input character: 0x5C
+    (
+        ".feature line_continuations\n.byte 1, \\\n2\n",
+        Some("0102"),
+    ),
+    (
+        ".feature line_continuations +\n.feature line_continuations -\n.byte 1, \\\n2\n",
+        None,
+    ),
+    // ca65: Invalid input character: 0x5C
+    (".linecont +\n.byte 1, \\\n\\\n2\n", Some("0102")),
+    (".linecont +\nfoo: \\\n.byte 1\n", Some("01")),
+    (
+        ".linecont +\n.macro m\n.byte 1, \\\n2\n.endmacro\n.linecont -\nm\n",
+        Some("0102"),
+    ),
+    (
+        ".macro m\n.byte 1, \\\n2\n.endmacro\n.linecont +\nm\n",
+        None,
+    ),
+    // ca65: Invalid input character: 0x5C
+    (".linecont +\n.byte 1, \\\r\n2\n", Some("0102")),
+    (".linecont 0\n", None),
+    // ca65: Expected ON or OFF but found ‘0’
+    (".if 0\n.linecont +\n.endif\n.byte 1, \\\n2\n", None),
+    // ca65: Invalid input character: 0x5C
+    (
+        ".linecont +\n.byte 1, \\\n.linecont -\n.byte 2, \\\n3\n",
+        None,
+    ),
+    // ca65: Expected an expression but found ‘.LINECONT’
+    (
+        ".linecont +\n.repeat 2\n.byte 1, \\\n2\n.endrepeat\n",
+        Some("01020102"),
+    ),
+    (".linecont +\n.define d 1, \\\n2\n.byte d\n", Some("0102")),
+    (".feature c_comments\n.byte 1 /* x */, 2\n", Some("0102")),
+    (".feature c_comments\n.byte 1, /* x\ny */ 2\n", Some("0102")),
+    (
+        ".feature c_comments\n.byte 1 /* a /* b */ , 2\n",
+        Some("0102"),
+    ),
+    (".feature c_comments\n.byte 1 /* a */ */ 2\n", None),
+    // ca65: Expected an expression but found ‘/’
+    (".feature c_comments\n.byte \"/*\", 2\n", Some("2f2a02")),
+    (".feature c_comments\n.byte 1 ; /*\n.byte 2\n", Some("0102")),
+    (".feature c_comments\n.byte 1 /* x\n", None),
+    // ca65: Unterminated comment
+    (".feature c_comments\n.byte 4/2\n", Some("02")),
+    (
+        ".feature c_comments\n.byte 1 /**/ , /***/ 2\n",
+        Some("0102"),
+    ),
+    (
+        ".feature c_comments\n.byte 1 /* x\n.byte 9\n */ , 2\n",
+        Some("0102"),
+    ),
+    (
+        ".feature c_comments\n/* whole\nlines */\n.byte 3\n",
+        Some("03"),
+    ),
+    (".byte 1 /* x */\n", None),
+    // ca65: Expected ‘end-of-line’ but found ‘X’
+    (
+        ".feature c_comments\n.byte 1 /* x */\n.feature c_comments -\n.byte 2 /* y */\n",
+        None,
+    ),
+    // ca65: Expected ‘end-of-line’ but found ‘Y’
+    (
+        ".feature c_comments\n.byte 1 /* \n.feature c_comments - */\n.byte 2\n",
+        Some("0102"),
+    ),
+    (
+        ".feature c_comments\n.macro m\n.byte 1 /* c */, 2\n.endmacro\n.feature c_comments -\nm\n",
+        Some("0102"),
+    ),
+    (
+        ".feature c_comments, line_continuations\n.byte 1, /* a */ \\\n2\n",
+        Some("0102"),
+    ),
+    (
+        ".feature c_comments\n.byte 1, /* a\n.endif */ 2\n",
+        Some("0102"),
+    ),
+];
+
+#[test]
+fn joining_settings_match_ca65() {
+    for &(source, hex) in JOINING {
+        let got = assemble(source);
+        assert_eq!(got.as_deref().ok(), hex, "{source:?}: {got:?}");
+    }
+}
+
 #[test]
 fn feature_says_what_is_wrong() {
     for (source, message) in [
@@ -1866,8 +1980,8 @@ fn feature_says_what_is_wrong() {
         (".feature dollar_is_pc 1\n", "Expected ON or OFF"),
         (".feature dollar_is_pc + x\n", "Expected end-of-line"),
         (
-            ".feature c_comments\n",
-            "the `c_comments` feature is not lowered yet",
+            ".feature org_per_seg\n",
+            "the `org_per_seg` feature is not lowered yet",
         ),
         (
             ".feature addrsize\n",

@@ -128,7 +128,7 @@ pub(super) fn setting(
         ".popcpu" => return Ok(Some(Some(CpuStack::Pop))),
         ".smart" | ".autoimport" | ".list" | ".debuginfo" => switch(command)?,
         // The expander reads names in upper case after `.case off`.
-        ".case" => switch(command)?,
+        ".case" | ".linecont" => switch(command)?,
         ".localchar" => local_char(command, &values)?,
         ".feature" => features(command)?,
         ".listbytes" => int_arg(command, &values, known, 4, 255)?,

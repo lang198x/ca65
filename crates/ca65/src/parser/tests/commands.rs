@@ -169,13 +169,11 @@ fn a_token_function_can_start_a_statement() {
 }
 
 #[test]
-fn reading_options_are_not_supported_yet() {
-    use lang198x_syntax::DiagnosticKind;
-    // `.case` reads like `.smart`, `.localchar` takes a value and
-    // `.feature` keeps its tokens; lowering checks each.
-    assert_eq!(kinds_of(".linecont +"), [DiagnosticKind::Unsupported]);
-    assert!(problems(".linecont +")[0].contains("not supported yet"));
+fn reading_options_parse_without_problems() {
+    // `.case` and `.linecont` read like `.smart`, `.localchar` takes a
+    // value and `.feature` keeps its tokens; lowering checks each.
     for command in [
+        ".linecont +",
         ".localchar '?'",
         ".feature c_comments",
         ".feature at_in_identifiers +, dollar_is_pc",

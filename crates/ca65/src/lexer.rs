@@ -161,6 +161,15 @@ impl<'t> Lexer<'t> {
                 (SyntaxKind::WHITESPACE, len)
             }
             ';' => (SyntaxKind::COMMENT, line_rest(rest)),
+            // With `line_continuations` (`.linecont +`), a backslash at the
+            // end of a line joins it to the next; ca65 trims trailing
+            // space first. It reads as space between tokens.
+            '\\' if mode.has(Feature::LineContinuations) => self.continuation(rest),
+            // With `c_comments`, `/*` starts a comment that runs to `*/`,
+            // across lines if it must. It reads as space between tokens.
+            '/' if mode.has(Feature::CComments) && rest.starts_with("/*") => {
+                (SyntaxKind::WHITESPACE, self.c_comment(rest))
+            }
             // With `dollar_is_pc`, a `$` that no hexadecimal digit follows
             // is the current address.
             '$' if mode.has(Feature::DollarIsPc)
@@ -198,6 +207,37 @@ impl<'t> Lexer<'t> {
             kind,
             len: len_size,
         })
+    }
+
+    /// A backslash with only spaces or tabs before the end of the line,
+    /// read with the line ending as space, or a lone backslash, which ca65
+    /// reports.
+    fn continuation(&mut self, rest: &str) -> (SyntaxKind, usize) {
+        let spaces = rest[1..]
+            .find(|c| !matches!(c, ' ' | '\t'))
+            .map_or(rest.len(), |at| at + 1);
+        let ending = &rest[spaces..];
+        let newline = if ending.starts_with("\r\n") {
+            2
+        } else if ending.starts_with(['\n', '\r']) {
+            1
+        } else {
+            self.report(1, "EOL expected.".into());
+            return (SyntaxKind::ERROR, 1);
+        };
+        (SyntaxKind::WHITESPACE, spaces + newline)
+    }
+
+    /// A C comment from `/*` to the next `*/`, which does not nest. One the
+    /// text ends inside runs to the end, and is reported.
+    fn c_comment(&mut self, rest: &str) -> usize {
+        match rest[2..].find("*/") {
+            Some(at) => 2 + at + 2,
+            None => {
+                self.report(rest.len(), "Unterminated comment".into());
+                rest.len()
+            }
+        }
     }
 
     /// Records an invalid-source diagnostic for the next `len` bytes.

@@ -721,3 +721,54 @@ fn features_change_strings_and_characters() {
     // Without escapes, a backslash ends nothing.
     assert_eq!(kinds_of(r#""a\" 1"#, MODE), [kinds::STRING, kinds::NUMBER]);
 }
+
+#[test]
+fn joining_features_read_as_space() {
+    use crate::Feature;
+    let tokens_in = |text: &str, mode: Mode| -> Vec<(SyntaxKind, String)> {
+        let lexed = lex(text, mode);
+        let mut pos = 0;
+        lexed
+            .tokens()
+            .iter()
+            .map(|t| {
+                let end = pos + t.len().to_usize();
+                let token = (t.kind(), text[pos..end].to_owned());
+                pos = end;
+                token
+            })
+            .collect()
+    };
+    let joined = MODE.with_feature(Feature::LineContinuations, true);
+    assert_eq!(
+        tokens_in("1,\\  \n2", joined),
+        [
+            (kinds::NUMBER, "1".to_owned()),
+            (kinds::COMMA, ",".to_owned()),
+            (SyntaxKind::WHITESPACE, "\\  \n".to_owned()),
+            (kinds::NUMBER, "2".to_owned()),
+        ]
+    );
+    assert_eq!(tokens_in("\\\r\n", joined)[0].1, "\\\r\n");
+    assert_eq!(
+        lex("\\ 3", joined).diagnostics()[0].message(),
+        "EOL expected."
+    );
+    assert_eq!(
+        lex("\\", joined).diagnostics()[0].message(),
+        "EOL expected."
+    );
+    // Without the feature, a backslash is not allowed.
+    assert_eq!(tokens_in("\\\n", MODE)[0].0, SyntaxKind::ERROR);
+    let comments = MODE.with_feature(Feature::CComments, true);
+    assert_eq!(
+        tokens_in("1/* a\nb */2", comments)[1],
+        (SyntaxKind::WHITESPACE, "/* a\nb */".to_owned())
+    );
+    assert_eq!(tokens_in("4/2", comments)[1].0, kinds::SLASH);
+    assert_eq!(
+        lex("/* x", comments).diagnostics()[0].message(),
+        "Unterminated comment"
+    );
+    assert_eq!(tokens_in("/* x */", MODE)[0].0, kinds::SLASH);
+}
