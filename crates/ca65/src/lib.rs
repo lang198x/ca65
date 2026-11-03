@@ -23,6 +23,7 @@
 
 pub mod ast;
 pub mod expand;
+mod features;
 mod format;
 mod keywords;
 pub mod kinds;
@@ -43,4 +44,4 @@ pub use keywords::{CONTROL_COMMANDS, is_control_command};
 pub use lang198x_syntax as syntax;
 pub use lexer::{Lexed, Lexer, Token, lex};
 pub use parser::{Context, ParseError, parse, parse_with};
-pub use profile::{Cpu, Mode, Profile, Widths};
+pub use profile::{Cpu, Feature, Mode, Profile, Widths};

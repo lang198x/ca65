@@ -624,3 +624,58 @@ fn the_local_character_starts_a_cheap_local() {
     let sweet16 = question.with_cpu(crate::Cpu::Sweet16);
     assert_eq!(kinds("@", sweet16), [kinds::AT]);
 }
+
+#[test]
+fn features_change_names_and_numbers() {
+    use crate::Feature;
+    let with = |features: &[Feature]| {
+        features
+            .iter()
+            .fold(MODE, |mode, &feature| mode.with_feature(feature, true))
+    };
+    let lexed = |text: &str, mode: Mode| -> Vec<(SyntaxKind, String)> {
+        let lexed = lex(text, mode);
+        let mut pos = 0;
+        let mut out = Vec::new();
+        for token in lexed.tokens() {
+            let end = pos + token.len().to_usize();
+            out.push((token.kind(), text[pos..end].to_owned()));
+            pos = end;
+        }
+        out
+    };
+    let one = |text: &str, mode: Mode| -> SyntaxKind {
+        let tokens = lexed(text, mode);
+        assert_eq!(tokens.len(), 1, "{text}: {tokens:?}");
+        tokens[0].0
+    };
+    let at = with(&[Feature::AtInIdentifiers]);
+    assert_eq!(one("foo@bar@", at), kinds::IDENT);
+    assert_eq!(one("@x@y", at), kinds::CHEAP_IDENT);
+    assert_eq!(lexed("foo@bar", MODE).len(), 2);
+    let dollar = with(&[Feature::DollarInIdentifiers]);
+    assert_eq!(one("foo$1", dollar), kinds::IDENT);
+    assert_eq!(one("$10", dollar), kinds::NUMBER);
+    let dot = with(&[Feature::LeadingDotInIdentifiers]);
+    assert_eq!(one(".foo", dot), kinds::IDENT);
+    assert_eq!(one(".byte", dot), kinds::CONTROL);
+    assert_eq!(one(".foo", MODE), kinds::CONTROL);
+    let underline = with(&[Feature::UnderlineInNumbers]);
+    for number in ["%1100_0011", "$12_34", "1_000", "1_2h"] {
+        assert_eq!(one(number, underline), kinds::NUMBER, "{number}");
+        assert!(lex(number, underline).diagnostics().is_empty(), "{number}");
+    }
+    for number in ["12_h", "$1_", "0_"] {
+        assert_eq!(one(number, underline), kinds::NUMBER, "{number}");
+        assert_eq!(
+            lex(number, underline).diagnostics()[0].message(),
+            "a number may not end with `_`"
+        );
+    }
+    let pc = with(&[Feature::DollarIsPc]);
+    assert_eq!(one("$", pc), kinds::DOLLAR);
+    assert_eq!(one("$a", pc), kinds::NUMBER);
+    assert_eq!(lexed("$g", pc)[0].0, kinds::DOLLAR);
+    assert_eq!(lexed("$$10", pc)[0], (kinds::DOLLAR, "$".to_owned()));
+    assert_eq!(one("$", MODE), kinds::NUMBER);
+}

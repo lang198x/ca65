@@ -130,12 +130,38 @@ pub(super) fn setting(
         // The expander reads names in upper case after `.case off`.
         ".case" => switch(command)?,
         ".localchar" => local_char(command, &values)?,
+        ".feature" => features(command)?,
         ".listbytes" => int_arg(command, &values, known, 4, 255)?,
         ".pagelen" | ".pagelength" => int_arg(command, &values, known, 32, 127)?,
         ".fileopt" | ".fopt" => file_option(command, &values, line, known)?,
         _ => return Ok(None),
     }
     Ok(Some(None))
+}
+
+/// Checks a `.feature` line, which the expander has already put in force.
+/// A feature this crate does not read yet is refused as not supported.
+fn features(command: &Command) -> Result<(), Diagnostic> {
+    let switches =
+        crate::features::switches(command).map_err(|(range, message)| invalid(range, &message))?;
+    for switch in switches {
+        match switch.feature {
+            Some(feature) if crate::features::is_read(feature) => {}
+            Some(feature) => {
+                return Err(unsupported(
+                    switch.range,
+                    &format!("the `{}` feature", feature.name()),
+                ));
+            }
+            None => {
+                return Err(unsupported(
+                    switch.range,
+                    "the deprecated `addrsize` feature",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Checks `.localchar`'s one argument, the character constant `'@'` or

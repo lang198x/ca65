@@ -899,10 +899,11 @@ impl Expander {
 
     /// Whether a line of `text`, parsed in `mode`, must be read again in
     /// `now`, the mode in force. Only a file's lines are: a body keeps the tokens
-    /// it was captured with. After `.case off`, every line of a file is,
-    /// since a file is parsed with its names as written.
+    /// it was captured with. After `.case off`, or while names may start
+    /// with a dot, every line of a file is, since a file is parsed with its
+    /// names as written.
     fn is_stale(now: Mode, mode: Mode, text: TextId) -> bool {
-        matches!(text, TextId::File(_)) && (mode != now || now.folded())
+        matches!(text, TextId::File(_)) && (mode != now || now.renames())
     }
 
     /// `line`, from `text`, lexed and parsed again in the current mode,
@@ -916,7 +917,18 @@ impl Expander {
         {
             let from = Span::new(text, token.text_range());
             let origin = self.copied(from);
-            if self.mode.folded() && matches!(token.kind(), kinds::IDENT | kinds::CHEAP_IDENT) {
+            // A token is folded as it was lexed before, so a dotted word
+            // that is no command, which `leading_dot_in_identifiers` makes a
+            // name, is folded too.
+            let name = match token.kind() {
+                kinds::IDENT | kinds::CHEAP_IDENT => true,
+                kinds::CONTROL => {
+                    self.mode.has(crate::Feature::LeadingDotInIdentifiers)
+                        && !crate::is_control_command(token.text())
+                }
+                _ => false,
+            };
+            if self.mode.renames() && name {
                 builder.push(&self.mode.read_name(token.text()), token.kind(), origin);
             } else {
                 builder.token(&token, from, origin, &self.strings);
@@ -972,8 +984,8 @@ impl Expander {
         }
     }
 
-    /// The commands that change how names are read: `.case` and
-    /// `.localchar`. A malformed one changes nothing, and is left for
+    /// The commands that change how names and numbers are read: `.case`,
+    /// `.localchar` and `.feature`. A malformed one changes nothing, and is left for
     /// lowering to report.
     fn choose_reading(&mut self, command: &Command, word: &str) {
         match word {
@@ -993,6 +1005,24 @@ impl Expander {
             ".localchar" => {
                 if let Some(mode) = local_char(command).and_then(|c| self.mode.with_local(c)) {
                     self.mode = mode;
+                }
+            }
+            // A `.feature` line that lowering refuses changes nothing.
+            ".feature" => {
+                let Ok(switches) = crate::features::switches(command) else {
+                    return;
+                };
+                if switches
+                    .iter()
+                    .any(|switch| switch.feature.is_none_or(|f| !crate::features::is_read(f)))
+                {
+                    return;
+                }
+                for switch in switches
+                    .into_iter()
+                    .filter_map(|s| Some((s.feature?, s.on)))
+                {
+                    self.mode = self.mode.with_feature(switch.0, switch.1);
                 }
             }
             _ => {}

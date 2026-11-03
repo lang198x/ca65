@@ -59,12 +59,13 @@ fn first_token(node: &SyntaxNode) -> Option<SyntaxToken> {
 }
 
 view! {
-    /// A number, character, string or `*`, as written.
+    /// A number, character, string, `*` or `$`, as written.
     Literal, kinds::LITERAL
 }
 
 impl Literal {
-    /// Returns the token: a `NUMBER`, a `CHAR`, a `STRING` or a `STAR`.
+    /// Returns the token: a `NUMBER`, a `CHAR`, a `STRING`, a `STAR` or a
+    /// `DOLLAR`.
     #[must_use]
     pub fn token(&self) -> Option<SyntaxToken> {
         first_token(&self.0)

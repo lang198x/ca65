@@ -1576,6 +1576,176 @@ fn reading_settings_match_ca65() {
     }
 }
 
+/// Programs measured on ca65 V2.19 that turn on `.feature`s changing how
+/// names and numbers are read, with the bytes it wrote, or `None` if it
+/// refused the program. None uses an address, which the harness places
+/// differently from ld65.
+const FEATURES: &[(&str, Option<&str>)] = &[
+    (
+        ".feature at_in_identifiers\nfoo@bar = 1\n.byte foo@bar\n",
+        Some("01"),
+    ),
+    (
+        ".feature at_in_identifiers\nfoo@ = 7\n.byte foo@\n",
+        Some("07"),
+    ),
+    (
+        ".feature at_in_identifiers\nlab:\n@x@y = 2\n.byte @x@y\n",
+        Some("02"),
+    ),
+    ("foo@bar = 1\n", None),
+    // t.s:1: Error: Expected ‘:’ after identifier to form a label but found ‘@bar’
+    (".feature at_in_identifiers -\nfoo@bar = 1\n", None),
+    // t.s:2: Error: Expected ‘:’ after identifier to form a label but found ‘@bar’
+    (".feature at_in_identifiers off\nfoo@bar = 1\n", None),
+    // t.s:2: Error: Expected ‘:’ after identifier to form a label but found ‘@bar’
+    (
+        ".feature at_in_identifiers on\nfoo@bar = 1\n.byte foo@bar\n",
+        Some("01"),
+    ),
+    (
+        ".feature AT_IN_IDENTIFIERS +\nfoo@bar = 1\n.byte foo@bar\n",
+        Some("01"),
+    ),
+    (
+        ".feature dollar_in_identifiers\nfoo$ = 3\n.byte foo$\n",
+        Some("03"),
+    ),
+    (
+        ".feature dollar_in_identifiers\nfoo$1 = 3\n.byte foo$1, $10\n",
+        Some("0310"),
+    ),
+    (
+        ".feature dollar_in_identifiers\nlab:\n@x$ = 2\n.byte @x$\n",
+        Some("02"),
+    ),
+    ("foo$ = 3\n", None),
+    // t.s:1: Error: Hexadecimal digit expected
+    (
+        ".feature leading_dot_in_identifiers\n.foo = 4\n.byte .foo\n",
+        Some("04"),
+    ),
+    (
+        ".feature leading_dot_in_identifiers\n.FOO = 4\n.byte .foo\n",
+        Some("04"),
+    ),
+    (
+        ".feature leading_dot_in_identifiers\n.macro .mm\n.byte 5\n.endmacro\n.mm\n",
+        Some("05"),
+    ),
+    (
+        ".feature leading_dot_in_identifiers\n.byte .lobyte($1234), 6\n",
+        Some("3406"),
+    ),
+    (
+        ".feature leading_dot_in_identifiers\n.ifdef .foo\n.byte 1\n.endif\n.byte 2\n",
+        Some("02"),
+    ),
+    (
+        ".feature leading_dot_in_identifiers\n.byte .defined(.bogus)\n",
+        Some("00"),
+    ),
+    (".foo = 4\n", None),
+    // t.s:1: Error: ‘.FOO’ is not a recognized control command
+    (
+        ".feature underline_in_numbers\n.dword %1100_0011, $12_34, 1_000, 0_1, 1_2h, $1__2, 4_294_967_295\n",
+        Some("c300000034120000e8030000010000001200000012000000ffffffff"),
+    ),
+    (".feature underline_in_numbers\n.byte 12_h\n", None),
+    // t.s:2: Error: Number may not end with underline
+    (".feature underline_in_numbers\n.byte $1_\n", None),
+    // t.s:2: Error: Number may not end with underline
+    (".feature underline_in_numbers\n.byte 0_\n", None),
+    // t.s:2: Error: Number may not end with underline
+    (".feature underline_in_numbers\n.byte $_1\n", None),
+    // t.s:2: Error: Hexadecimal digit expected
+    (".feature underline_in_numbers\n.dword $ffff_ffff_f\n", None),
+    // t.s:2: Error: Overflow in hexadecimal number
+    (".byte 1_0\n", None),
+    // t.s:1: Error: Expected ‘end-of-line’ but found ‘_0’
+    (
+        ".feature dollar_is_pc\n.byte $ - *, <($+2-*)\n",
+        Some("0002"),
+    ),
+    (".feature dollar_is_pc\n.word $10, $a\n", Some("10000a00")),
+    (
+        ".feature dollar_is_pc\n.byte .match($, *), .match($, $), .xmatch($, *)\n",
+        Some("000100"),
+    ),
+    (".feature dollar_is_pc\n.word $$10\n", None),
+    // t.s:2: Error: Expected ‘end-of-line’ but found ‘16’
+    (".feature dollar_is_pc\n.word 2 $ 3\n", None),
+    // t.s:2: Error: Expected ‘end-of-line’ but found ‘$’
+    (".feature dollar_is_pc\n$ = 5\n", None),
+    // t.s:2: Error: Expected ‘end-of-line’ but found ‘$’
+    (".byte $ - *\n", None),
+    // t.s:1: Error: Hexadecimal digit expected
+    (
+        ".feature dollar_is_pc, dollar_in_identifiers\nx$ = 1\n.byte x$\n",
+        Some("01"),
+    ),
+    (
+        ".feature dollar_is_pc, underline_in_numbers\n.byte $_1\n",
+        None,
+    ),
+    // t.s:2: Error: Expected ‘end-of-line’ but found ‘_1’
+    (
+        ".feature at_in_identifiers\n.macro m\nf@g = 9\n.endmacro\n.feature at_in_identifiers -\nm\n.byte f@g\n",
+        None,
+    ),
+    // t.s:7: Error: Expected ‘end-of-line’ but found ‘@g’
+    (
+        ".macro m\n.byte foo@bar\n.endmacro\n.feature at_in_identifiers\nfoo@bar = 1\nm\n",
+        None,
+    ),
+    // t.s:6: Error: Expected ‘end-of-line’ but found ‘@bar’
+    (".feature bogus\n", None),
+    // t.s:1: Error: Invalid feature: ‘bogus’
+    (".feature\n", None),
+    // t.s:1: Error: Expected an identifier but found ‘end-of-line’
+    (".feature at_in_identifiers +,\n", None),
+    // t.s:1: Error: Expected an identifier but found ‘end-of-line’
+    (".feature at_in_identifiers 1\n", None),
+    // t.s:1: Error: Expected ON or OFF but found ‘1’
+    (".feature at_in_identifiers + x\n", None),
+    // t.s:1: Error: Expected ‘end-of-line’ but found ‘X’
+    (
+        ".if 0\n.feature at_in_identifiers\n.endif\nfoo@bar = 1\n",
+        None,
+    ),
+    // t.s:4: Error: Expected ‘:’ after identifier to form a label but found ‘@bar’
+];
+
+#[test]
+fn token_features_match_ca65() {
+    for &(source, hex) in FEATURES {
+        let got = assemble(source);
+        assert_eq!(got.as_deref().ok(), hex, "{source:?}: {got:?}");
+    }
+}
+
+#[test]
+fn feature_says_what_is_wrong() {
+    for (source, message) in [
+        (".feature bogus\n", "Invalid feature: `bogus`"),
+        (".feature\n", "Expected an identifier"),
+        (".feature dollar_is_pc,\n", "Expected an identifier"),
+        (".feature dollar_is_pc 1\n", "Expected ON or OFF"),
+        (".feature dollar_is_pc + x\n", "Expected end-of-line"),
+        (
+            ".feature c_comments\n",
+            "the `c_comments` feature is not lowered yet",
+        ),
+        (
+            ".feature addrsize\n",
+            "the deprecated `addrsize` feature is not lowered yet",
+        ),
+    ] {
+        let problem = first(source).err().map(|d| d.message().to_owned());
+        assert_eq!(problem.as_deref(), Some(message), "{source}");
+    }
+}
+
 #[test]
 fn localchar_says_what_is_wrong() {
     for (source, message) in [
