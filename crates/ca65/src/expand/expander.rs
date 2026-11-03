@@ -1540,6 +1540,10 @@ impl Expander {
             self.report(text, site, &message);
             return;
         }
+        if self.is_instruction_name(&name) {
+            self.report(text, site, "an instruction cannot be a macro's name");
+            return;
+        }
         let params = command
             .params()
             .map(|p| p.names().map(|n| n.text().to_owned()).collect())
@@ -1778,6 +1782,12 @@ impl Expander {
         }
     }
 
+    /// Whether `name` is an instruction's, which a macro may not take
+    /// unless `ubiquitous_idents` is on.
+    fn is_instruction_name(&self, name: &str) -> bool {
+        self.mode.cpu().is_mnemonic(name) && !self.mode.has(crate::Feature::UbiquitousIdents)
+    }
+
     /// `.define name[(params)] body`.
     fn define_style(&mut self, command: &Command, text: TextId) {
         let site = command.syntax().text_range();
@@ -1787,7 +1797,7 @@ impl Expander {
                 let message = format!("a macro named `{name}` is already defined");
                 self.report(text, site, &message);
             }
-            Ok(Some((name, _))) if self.mode.cpu().is_mnemonic(&name) => {
+            Ok(Some((name, _))) if self.is_instruction_name(&name) => {
                 self.report(text, site, "an instruction cannot be a macro's name");
             }
             Ok(Some((name, define))) => {
@@ -2174,7 +2184,11 @@ impl functions::Answers for Asked<'_> {
     }
 
     fn is_mnemonic(&self, name: &str) -> bool {
+        // With `ubiquitous_idents`, a macro by an instruction's name hides
+        // the instruction.
         self.expander.mode.cpu().is_mnemonic(name)
+            && !(self.expander.mode.has(crate::Feature::UbiquitousIdents)
+                && self.expander.macros.contains_key(name))
     }
 
     fn mode(&self) -> Mode {

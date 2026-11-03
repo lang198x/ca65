@@ -86,7 +86,8 @@ impl Immediate {
 }
 
 view! {
-    /// `(address)`, `(address,x)` or `(address),y`.
+    /// `(address)`, `(address,x)` or `(address),y`, or the same in square
+    /// brackets with the `bracket_as_indirect` feature.
     Indirect, kinds::INDIRECT
 }
 
@@ -100,13 +101,26 @@ impl Indirect {
     /// Returns the register inside the parentheses, as in `(address,x)`.
     #[must_use]
     pub fn inner_register(&self) -> Option<SyntaxToken> {
-        registers(&self.0, kinds::R_PAREN).0
+        registers(&self.0, self.closer()).0
     }
 
     /// Returns the register after the parentheses, as in `(address),y`.
     #[must_use]
     pub fn outer_register(&self) -> Option<SyntaxToken> {
-        registers(&self.0, kinds::R_PAREN).1
+        registers(&self.0, self.closer()).1
+    }
+
+    /// The token that closes the indirection: `)`, or `]` with the
+    /// `bracket_as_indirect` feature, which marks it with brackets.
+    fn closer(&self) -> lang198x_syntax::SyntaxKind {
+        let bracketed = super::child_tokens(&self.0)
+            .next()
+            .is_some_and(|t| t.kind() == kinds::L_BRACK);
+        if bracketed {
+            kinds::R_BRACK
+        } else {
+            kinds::R_PAREN
+        }
     }
 }
 

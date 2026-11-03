@@ -1971,6 +1971,150 @@ fn joining_settings_match_ca65() {
     }
 }
 
+/// Programs measured on ca65 V2.19 that turn on the `.feature`s changing
+/// how a line is parsed, with the bytes it wrote, or `None` if it refused
+/// the program. Each places its code with `.org` or `* =`, where it uses an
+/// address, since the harness places code differently from ld65.
+const PARSING: &[(&str, Option<&str>)] = &[
+    (
+        ".feature labels_without_colons\n.org $1000\nfoo nop\njmp foo\n",
+        Some("ea4c0010"),
+    ),
+    (
+        ".feature labels_without_colons\n.org $1000\nfoo\n.word foo\n",
+        Some("0010"),
+    ),
+    (".feature labels_without_colons\n foo nop\n", None),
+    // ca65: Expected ‘:’ after identifier to form a label but found ‘nop’
+    (
+        ".feature labels_without_colons\n.org $1000\nfoo .byte 1\n.word foo\n",
+        Some("010010"),
+    ),
+    (
+        ".feature labels_without_colons\n.org $1000\nlab\n@x nop\n.word @x\n",
+        Some("ea0010"),
+    ),
+    (
+        ".feature labels_without_colons\nnop\n.byte 1\n",
+        Some("ea01"),
+    ),
+    (
+        ".feature labels_without_colons\nfoo = 3\n.byte foo\n",
+        Some("03"),
+    ),
+    (
+        ".feature labels_without_colons\n.org $1000\nfoo nop ; c\n.word foo\n",
+        Some("ea0010"),
+    ),
+    (
+        ".feature labels_without_colons\n.macro m\n.byte 2\n.endmacro\nm\n",
+        Some("02"),
+    ),
+    (
+        ".feature labels_without_colons\n.macro m\n.byte 2\n.endmacro\n.org $1000\nfoo m\n.word foo\n",
+        Some("020010"),
+    ),
+    (".feature labels_without_colons\nfoo bar nop\n", None),
+    // ca65: Expected ‘end-of-line’ but found ‘bar’
+    ("foo nop\n", None),
+    // ca65: Expected ‘:’ after identifier to form a label but found ‘nop’
+    (
+        ".feature labels_without_colons\nfoo\n.feature labels_without_colons -\nbar\n",
+        None,
+    ),
+    // ca65: Expected ‘:’ after identifier to form a label but found ‘end-of-line’
+    (
+        ".feature labels_without_colons\n.macro m\nbar\n.endmacro\n.org $1000\nm\n.word bar\n",
+        Some("0010"),
+    ),
+    (
+        ".feature bracket_as_indirect\nlda [$82],y\nlda [$82,x]\njmp [$1234]\n",
+        Some("b182a1826c3412"),
+    ),
+    (
+        ".feature bracket_as_indirect\nlda ($82),y\n",
+        Some("b98200"),
+    ),
+    (".feature bracket_as_indirect\nlda ($82)\n", Some("a582")),
+    (".feature bracket_as_indirect\nlda #(1+2)*2\n", Some("a906")),
+    (".feature bracket_as_indirect\njmp [$1234,x]\n", None),
+    // ca65: Illegal addressing mode
+    (".feature bracket_as_indirect\n.byte [1]\n", None),
+    // ca65: Expected an expression but found ‘[’
+    (".feature bracket_as_indirect\nlda [$82\n", None),
+    // ca65: Expected ‘]’ but found ‘end-of-line’
+    (
+        ".feature ubiquitous_idents\n.macro lda v\n.byte v\n.endmacro\nlda 5\n",
+        Some("05"),
+    ),
+    (".macro lda v\n.byte v\n.endmacro\nlda 5\n", None),
+    // ca65: Cannot use an instruction as macro name
+    (".feature ubiquitous_idents\nlda = 5\n", None),
+    // ca65: Expected an expression but found ‘=’
+    (".feature ubiquitous_idents\nlda: nop\n", None),
+    // ca65: Expected an expression but found ‘:’
+    (
+        ".feature ubiquitous_idents\n.byte .ismnemonic(lda)\n",
+        Some("01"),
+    ),
+    (
+        ".feature ubiquitous_idents\n.macro lda\n.endmacro\n.byte .ismnemonic(lda)\n",
+        Some("00"),
+    ),
+    (
+        ".feature ubiquitous_idents\n.macro lda v\n.byte v\n.endmacro\nlab: lda 7\n",
+        Some("07"),
+    ),
+    (
+        ".feature ubiquitous_idents\n.macro lda v\n.byte v\n.endmacro\n.feature ubiquitous_idents -\nlda 5\n",
+        Some("a505"),
+    ),
+    (
+        ".feature ubiquitous_idents\n.define lda 9\n.byte lda\n",
+        Some("09"),
+    ),
+    (".define lda 9\n.byte lda\n", None),
+    // ca65: Cannot use an instruction as macro name
+    (".feature ubiquitous_idents\nlda 5\n", Some("a505")),
+    (
+        ".feature pc_assignment\n* = $1000\nlab: .word lab\n",
+        Some("0010"),
+    ),
+    (".feature pc_assignment\n*=$1000\n.word *\n", Some("0010")),
+    (
+        ".feature pc_assignment, dollar_is_pc\n$ = $2000\n.word $\n",
+        Some("0020"),
+    ),
+    (".feature pc_assignment\n* $1000\n", None),
+    // ca65: Expected ‘=’ but found ‘4096’
+    (
+        ".feature pc_assignment\n* = $1000 + 2\n.word *\n",
+        Some("0210"),
+    ),
+    (
+        ".feature pc_assignment\n* = $1000\nfoo: * = $2000\n.word foo, *\n",
+        Some("00100220"),
+    ),
+    ("* = $1000\n", None),
+    // ca65: Expected a mnemonic but found ‘*’
+    (".feature pc_assignment\n *= $1000\n.word *\n", Some("0010")),
+    (".feature pc_assignment\n* := $1000\n", None),
+    // ca65: Expected ‘=’ but found ‘:=’
+    (
+        ".feature pc_assignment\n* = $1000\n.feature pc_assignment -\n* = $2000\n",
+        None,
+    ),
+    // ca65: Expected a mnemonic but found ‘*’
+];
+
+#[test]
+fn parsing_features_match_ca65() {
+    for &(source, hex) in PARSING {
+        let got = assemble(source);
+        assert_eq!(got.as_deref().ok(), hex, "{source:?}: {got:?}");
+    }
+}
+
 #[test]
 fn feature_says_what_is_wrong() {
     for (source, message) in [

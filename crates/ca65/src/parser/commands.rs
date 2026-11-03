@@ -8,6 +8,7 @@
 
 use super::{Block, Parser};
 use crate::kinds;
+use crate::profile::Feature;
 
 /// How a control command's arguments are read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -451,7 +452,8 @@ impl Parser<'_, '_> {
         let Some(name) = self.defined_name() else {
             return;
         };
-        if self.is_mnemonic(&name) {
+        // With `ubiquitous_idents`, a macro may take an instruction's name.
+        if self.is_mnemonic(&name) && !self.mode.has(Feature::UbiquitousIdents) {
             let start = self.offset(self.pos - 1);
             let end = self.offset(self.pos);
             self.report(start, end, "an instruction cannot be a macro's name");
