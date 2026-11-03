@@ -19,6 +19,7 @@ mod macros;
 mod made;
 mod repeats;
 
+#[cfg(feature = "ir")]
 pub(crate) use expander::local_char;
 pub use expander::{ActiveLine, Expander, Finished, Host, IncludedFile, Limits};
 pub use locate::{FrameAt, Location, MacroFrame, Reading};
