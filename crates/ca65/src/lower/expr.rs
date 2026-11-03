@@ -300,14 +300,15 @@ fn literal_value(token: &SyntaxToken, known: &dyn Known) -> Result<Ir, Diagnosti
         // A character goes through the character map, whatever escape
         // wrote it, as in ca65.
         kinds::CHAR => {
-            let byte = character(text).ok_or_else(|| invalid(range, "a character is one byte"))?;
+            let byte = character(text, known.char_set())
+                .ok_or_else(|| invalid(range, "a character is one byte"))?;
             Ok(Ir::Num(i64::from(known.translate(byte))))
         }
         kinds::STAR | kinds::DOLLAR => Ok(Ir::Pc),
         // With `loose_char_term`, a string of one byte is a character.
         kinds::STRING if known.has_feature(crate::Feature::LooseCharTerm) => {
             let bytes = known.string(token).map_or_else(
-                || crate::quoted::unquoted(text).as_bytes().to_vec(),
+                || crate::quoted::unquoted_bytes(text, known.char_set()),
                 |(bytes, _)| bytes,
             );
             match bytes.as_slice() {
@@ -322,12 +323,12 @@ fn literal_value(token: &SyntaxToken, known: &dyn Known) -> Result<Ir, Diagnosti
 /// The byte a character constant spelt `text` holds. A constant longer than one character holds an escape, which only
 /// `string_escapes` lets the lexer make; `'\''`, which `loose_string_term`
 /// allows, is a quote, and `'\'` a backslash, as ca65 reads them.
-fn character(text: &str) -> Option<u8> {
-    let as_string = crate::quoted::string(text, '\'', true);
+fn character(text: &str, char_set: Option<lang198x_syntax::CharSet>) -> Option<u8> {
+    let as_string = crate::quoted::string(text, '\'', true, char_set);
     let quoted = if as_string.problem.is_none() && as_string.len == text.len() {
         as_string
     } else {
-        crate::quoted::character(text, true, true)
+        crate::quoted::character(text, true, true, char_set)
     };
     match quoted.bytes.as_slice() {
         [byte] if quoted.problem.is_none() => Some(*byte),

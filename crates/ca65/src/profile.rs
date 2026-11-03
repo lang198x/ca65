@@ -1,5 +1,6 @@
 //! Profiles, CPUs and the lexer's mode.
 
+use lang198x_syntax::CharSet;
 /// A version of ca65, and the CPU it assembles for.
 ///
 /// Each profile names the tool version it describes, because the answers it
@@ -330,6 +331,9 @@ pub struct Mode {
     local: char,
     /// One bit for each [`Feature`] that is on.
     features: u32,
+    /// The character set the source was read from as bytes, or `None` if
+    /// it was given as text.
+    char_set: Option<CharSet>,
 }
 
 impl Mode {
@@ -342,7 +346,24 @@ impl Mode {
             folded: false,
             local: '@',
             features: 0,
+            char_set: None,
         }
+    }
+
+    /// This mode, for source read from bytes in `char_set`, or given as
+    /// text with `None`. In Latin-1 source, a character in a string or a
+    /// character constant is the one byte it was read from, as ca65 reads
+    /// it; in text, each character is its UTF-8 bytes.
+    #[must_use]
+    pub const fn with_char_set(self, char_set: Option<CharSet>) -> Self {
+        Self { char_set, ..self }
+    }
+
+    /// The character set the source was read from as bytes, or `None` if
+    /// it was given as text.
+    #[must_use]
+    pub const fn char_set(self) -> Option<CharSet> {
+        self.char_set
     }
 
     /// The CPU whose registers the lexer recognises.

@@ -1,7 +1,7 @@
 use super::*;
 
 fn bytes(rest: &str, escapes: bool) -> (Vec<u8>, Option<&'static str>) {
-    let quoted = string(rest, '"', escapes);
+    let quoted = string(rest, '"', escapes, None);
     (quoted.bytes, quoted.problem)
 }
 
@@ -42,26 +42,26 @@ fn strings_read_escapes_as_ca65_does() {
 
 #[test]
 fn hex_and_octal_escapes_are_raw() {
-    let quoted = string(r#""\n\x0a\12""#, '"', true);
+    let quoted = string(r#""\n\x0a\12""#, '"', true, None);
     assert_eq!(quoted.bytes, [10, 10, 10]);
     assert_eq!(quoted.raw, [false, true, true]);
 }
 
 #[test]
 fn a_string_ends_at_its_own_quote() {
-    let quoted = string("'a\"b' rest", '\'', false);
+    let quoted = string("'a\"b' rest", '\'', false, None);
     assert_eq!(
         (quoted.len, quoted.bytes.as_slice()),
         (5, b"a\"b".as_slice())
     );
-    let quoted = string(r#""a\"b" rest"#, '"', true);
+    let quoted = string(r#""a\"b" rest"#, '"', true, None);
     assert_eq!(quoted.len, 6);
 }
 
 #[test]
 fn characters_follow_ca65() {
     let read = |rest: &str, escapes, missing| {
-        let quoted = character(rest, escapes, missing);
+        let quoted = character(rest, escapes, missing, None);
         (quoted.len, quoted.bytes, quoted.problem)
     };
     assert_eq!(read("'a'", false, false), (3, vec![b'a'], None));

@@ -325,7 +325,7 @@ impl<'t> Lexer<'t> {
     fn single_quoted(&mut self, rest: &str, mode: Mode) -> (SyntaxKind, usize) {
         let escapes = mode.has(Feature::StringEscapes);
         if mode.has(Feature::LooseStringTerm) {
-            let quoted = quoted::string(rest, '\'', escapes);
+            let quoted = quoted::string(rest, '\'', escapes, mode.char_set());
             self.quoted_problem(&quoted, rest);
             let kind = if quoted.bytes.len() == 1 {
                 kinds::CHAR
@@ -345,15 +345,16 @@ impl<'t> Lexer<'t> {
             rest,
             mode.has(Feature::StringEscapes),
             mode.has(Feature::MissingCharTerm),
+            mode.char_set(),
         );
         // ca65 ends a character constant at a zero byte, as its scanner
         // reads one with a terminator of zero, and holds bytes, not
-        // characters.
+        // characters: in text, a character past ASCII is more than one.
         let well_formed = quoted.problem.is_none()
             && match (quoted.bytes.as_slice(), quoted.raw.as_slice()) {
                 // A `\x` or octal escape may give any byte.
                 ([_], [true]) => true,
-                ([byte], _) => byte.is_ascii() && *byte != 0,
+                ([byte], _) => *byte != 0,
                 _ => false,
             };
         if well_formed {
@@ -376,7 +377,7 @@ impl<'t> Lexer<'t> {
     /// if `string_escapes` is on. If the line ends first, the string stops
     /// there and is reported.
     fn string(&mut self, rest: &str, mode: Mode) -> usize {
-        let quoted = quoted::string(rest, '"', mode.has(Feature::StringEscapes));
+        let quoted = quoted::string(rest, '"', mode.has(Feature::StringEscapes), mode.char_set());
         self.quoted_problem(&quoted, rest);
         quoted.len
     }
