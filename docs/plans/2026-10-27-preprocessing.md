@@ -140,8 +140,9 @@ built to follow C, on the reading that ca65's manual calls the format
 "similar to the one of the C printf function". On 2026-11-06 it was changed
 to follow ca65, because Asm198x must give ca65's bytes
 ([asm198x/asm198x#1040](https://github.com/asm198x/asm198x/issues/1040)).
-`.mid` still takes its start as given, where ca65 treats a start above 100
-as 0. Results are handed on as tokens, not
+`.mid` treats a start above 100 as 0, as ca65 does on purpose; it too took
+its start as given until 2026-11-06. ca65 is followed except where its
+behaviour is a known bug. Results are handed on as tokens, not
 text (see [expansions keep their tokens](2026-10-27-made-tokens.md)), so
 `.ident` of a name spelt like a register makes a name, and a made string may
 hold a quote, a line break or a byte above 127, as in ca65.
