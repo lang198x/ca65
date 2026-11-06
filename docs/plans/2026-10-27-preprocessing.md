@@ -132,11 +132,16 @@ count is a constant expression the host evaluates. A token list runs to the
 first `)` unless it is in braces. Each result is `Synthesised` from the
 call.
 
-Where ca65 V2.19 is wrong against its manual, the manual wins. `.sprintf`'s
-format is "similar to the one of the C printf function", so C's results are
-given where ca65's own formatter differs: `%x` of a negative number, `%#x` of
-0, and the width of `%c` and `%s`. `.mid` takes its start as given, where
-ca65 treats a start above 100 as 0. Results are handed on as tokens, not
+`.sprintf` formats as ca65 V2.19 does, through cc65's own `xvsnprintf`
+rather than C's `printf`: `%x` of a negative number is a sign and the
+magnitude, `+` and a space mark unsigned conversions too, `%#x` of 0 is
+`0x0`, and `%c` and `%s` pad on the right unless `-` is given. This was first
+built to follow C, on the reading that ca65's manual calls the format
+"similar to the one of the C printf function". On 2026-11-06 it was changed
+to follow ca65, because Asm198x must give ca65's bytes
+([asm198x/asm198x#1040](https://github.com/asm198x/asm198x/issues/1040)).
+`.mid` still takes its start as given, where ca65 treats a start above 100
+as 0. Results are handed on as tokens, not
 text (see [expansions keep their tokens](2026-10-27-made-tokens.md)), so
 `.ident` of a name spelt like a register makes a name, and a made string may
 hold a quote, a line break or a byte above 127, as in ca65.
