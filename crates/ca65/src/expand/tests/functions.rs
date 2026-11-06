@@ -453,11 +453,14 @@ fn sprintf_gives_what_ca65_gave_for_each_measured_case() {
 }
 
 #[test]
-fn mid_takes_its_start_as_given() {
-    // ca65 V2.19 gives 07: it treats a start above 100 as 0, which its
-    // manual does not say. The start is taken as given, so nothing is left.
-    assert!(run(".byte .mid(200, 1, {7})\n").is_err());
-    assert_eq!(run(".byte .mid(200, 1, {7}) 5\n").as_deref(), Ok(&[5][..]));
+fn mid_treats_a_start_above_100_as_0() {
+    // ca65 V2.19's `FuncMid` corrects a start below 0 or above 100 to 0,
+    // silently. Its manual does not say so; ca65 gives 07 for the first.
+    assert_eq!(run(".byte .mid(200, 1, {7})\n").as_deref(), Ok(&[7][..]));
+    assert_eq!(run(".byte .mid(101, 1, {7})\n").as_deref(), Ok(&[7][..]));
+    assert_eq!(run(".byte .mid(-1, 1, {7})\n").as_deref(), Ok(&[7][..]));
+    // 100 is kept, so nothing is left of a short list.
+    assert!(run(".byte .mid(100, 1, {7})\n").is_err());
 }
 
 /// Strings a token function makes that ca65's syntax cannot write: a

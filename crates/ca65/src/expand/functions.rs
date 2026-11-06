@@ -21,9 +21,8 @@
 //! symbols, such as `.defined`, depend on the names read before them on the
 //! line, so they are left to whatever lowers the line.
 //!
-//! `.mid` takes tokens from its start, however large. ca65 V2.19 instead
-//! treats a start above 100 as 0, which its manual does not say; that is
-//! not copied.
+//! `.mid` treats a start below 0 or above 100 as 0, as ca65 V2.19's
+//! `FuncMid` does on purpose, though its manual does not say so.
 
 use lang198x_syntax::{Origin, Span, SyntaxKind};
 
@@ -378,7 +377,11 @@ impl Stream<'_> {
                 Ok(spaced(call, kept))
             }
             ".mid" => {
-                let start = count(self.value(call)?);
+                // ca65 corrects a start below 0 or above 100 to 0, silently.
+                let start = match self.value(call)? {
+                    value @ 0..=100 => count(value),
+                    _ => 0,
+                };
                 self.expect(call, kinds::COMMA, "`,`")?;
                 let length = count(self.value(call)?);
                 self.expect(call, kinds::COMMA, "`,`")?;
