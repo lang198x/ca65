@@ -63,7 +63,7 @@ const MEASURED: &[(&str, Want)] = &[
     ),
     (
         ".byte .sprintf(\"%.3d|%5.2d|%-5s|%.1s|%05d|%-05d\", 7, 3, \"ab\", \"xy\", -12, 4)\n",
-        Bytes(b"007|   03|ab   |x|-0012|4    "),
+        Bytes(b"007|   03|   ab|x|-0012|4    "),
     ),
     // Functions run where their text is used, not where it is written.
     (".define D .left(1, {7 8})\n.byte D\n", Bytes(&[7])),
@@ -260,16 +260,39 @@ fn measured_results_that_ca65_refuses_once_read_again() {
 }
 
 #[test]
-fn where_ca65_strays_from_printf_c_is_followed() {
-    // ca65's manual calls the format "similar to the one of the C printf
-    // function". ca65 V2.19 gives `-1`, `0X0`, `B  ` and `ab   ` here,
-    // from bugs in its own formatter; C's results are given instead.
+fn sprintf_formats_as_ca65_does_where_c_would_not() {
+    // ca65 V2.19 formats with cc65's own `xvsnprintf`, not C's `printf`:
+    // `%x` is signed, `+` marks unsigned conversions, `#` shows `0x` for 0,
+    // and `%s` and `%c` pad on the right unless `-` is given. Each line is
+    // one of Asm198x's differential probes, with ca65 V2.19's bytes.
     for (source, want) in [
-        (".byte .sprintf(\"%x\", -1)\n", &b"ffffffffffffffff"[..]),
-        (".byte .sprintf(\"%#X\", 0)\n", b"0"),
-        (".byte .sprintf(\"%3c\", 66)\n", b"  B"),
-        (".byte .sprintf(\"%5s\", \"ab\")\n", b"   ab"),
+        (
+            ".byte .sprintf(\"%d|%i|%u|%c|%s\", 5, -5, -5, 65, \"ab\")\n\
+             .byte .sprintf(\"%x|%X|%o|100%%\", -255, -255, -9)\n",
+            &b"5|-5|18446744073709551611|A|ab-ff|FFFFFFFFFFFFFF01|1777777777777777777767|100%"[..],
+        ),
+        (
+            ".byte .sprintf(\"%+d|% d|%6d|%-6d|%06d|%+06d\", 5, 5, -5, -5, -5, 0)\n\
+             .byte .sprintf(\"%#x|%#X|%#o|%#x|%#o\", 255, 255, 9, 0, 0)\n\
+             .byte .sprintf(\"%#08x|%+#08x|%#08X|%+#08X\", -255, 255, -255, 255)\n",
+            b"+5| 5|    -5|-5    |-00005|+000000xff|0XFF|011|0x0|0-0x000ff|+0x000ff|0XFFFFFFFFFFFFFF01|+0X000FF",
+        ),
+        (
+            ".byte .sprintf(\"[%6s][%-6s][%06s][%.2s]\", \"ab\", \"ab\", \"ab\", \"abcd\")\n\
+             .byte .sprintf(\"[%6c][%-6c]\", 65, 65)\n",
+            b"[ab    ][    ab][ab    ][ab][A     ][     A]",
+        ),
+        (
+            ".byte .sprintf(\"%.3d|%.4x|%.4X|%.4o|%.4u\", -5, -255, -255, -9, 5)\n\
+             .byte .sprintf(\"[%.0d][%.0x][%08.3d][%#.4o]\", 0, 0, 5, 9)\n",
+            b"-005|-00ff|FFFFFFFFFFFFFF01|1777777777777777777767|0005[][][     005][0011]",
+        ),
+        (".byte .sprintf(\"%x\", -1)\n", b"-1"),
+        (".byte .sprintf(\"%#X\", 0)\n", b"0X0"),
+        (".byte .sprintf(\"%3c\", 66)\n", b"B  "),
+        (".byte .sprintf(\"%5s\", \"ab\")\n", b"ab   "),
         (".byte .sprintf(\"%u\", -1)\n", b"18446744073709551615"),
+        (".byte .sprintf(\"[%.0c][% +d]\", 66, 5)\n", b"[][+5]"),
     ] {
         assert_eq!(run(source).as_deref(), Ok(want), "{source:?}");
     }
@@ -311,8 +334,8 @@ const UNWRITABLE: &[(&str, &[u8])] = &[
         ".macro emit value\n.byte value,2\n.endmacro\nemit {.sprintf(\"%c\",255)}\n",
         &[0xFF, 2],
     ),
-    // ca65 V2.19 pads `%c` on the right, against C; C's result is given.
-    (".byte .sprintf(\"%3c\",255)\n", &[0x20, 0x20, 0xFF]),
+    // ca65 V2.19 pads `%c` on the right, against C.
+    (".byte .sprintf(\"%3c\",255)\n", &[0xFF, 0x20, 0x20]),
 ];
 
 #[test]

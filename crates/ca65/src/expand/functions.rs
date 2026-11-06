@@ -545,20 +545,14 @@ impl Stream<'_> {
             self.expect(call, kinds::COMMA, "`,`")?;
             let piece = match conversion {
                 'd' | 'i' | 'o' | 'u' | 'x' | 'X' => spec.integer(self.value(call)?, conversion),
-                's' => {
-                    let mut text = self.string(call)?;
-                    if let Some(n) = spec.precision {
-                        text.truncate(n);
-                    }
-                    spec.pad(Vec::new(), text, false)
-                }
+                's' => spec.text(self.string(call)?),
                 'c' => {
                     let value = self.value(call)?;
                     let byte = u8::try_from(value)
                         .ok()
                         .filter(|b| *b != 0)
                         .ok_or_else(|| call.problem("a `%c` argument must be 1 to 255"))?;
-                    spec.pad(Vec::new(), vec![byte], false)
+                    spec.text(vec![byte])
                 }
                 other => {
                     return Err(
@@ -722,8 +716,10 @@ fn digits(bytes: &mut std::iter::Peekable<std::vec::IntoIter<u8>>) -> usize {
     n
 }
 
-/// One `%` conversion's flags, width and precision, as C's `printf` reads
-/// them, which ca65 hands its formats to.
+/// One `%` conversion's flags, width and precision. ca65 V2.19 copies them
+/// into a format of its own and hands it to cc65's `xvsnprintf`
+/// (`common/xsprintf.c`), so they mean what they mean there, which is not
+/// always what they mean to C's `printf`.
 #[derive(Default)]
 struct Spec {
     left: bool,
@@ -736,65 +732,83 @@ struct Spec {
 }
 
 impl Spec {
-    /// `value` as `%d`, `%i`, `%o`, `%u`, `%x` or `%X` on a `long`.
+    /// `value` as `%d`, `%i`, `%o`, `%u`, `%x` or `%X` on a `long`, as
+    /// `xvsnprintf`'s `FormatInt` writes it. Where that differs from C:
+    ///
+    /// - `%x` is signed, so a negative value is a `-` and its magnitude.
+    ///   `%X`, `%o` and `%u` are unsigned.
+    /// - `+` and a space mark the unsigned conversions too.
+    /// - `#` puts `0x` or `0X` before any hex value, 0 included.
     fn integer(&self, value: i64, conversion: char) -> Vec<u8> {
+        let unsigned = !matches!(conversion, 'd' | 'i' | 'x');
+        let mut lead = String::new();
         #[allow(clippy::cast_sign_loss)]
-        let bits = value as u64;
-        let (sign, mut digits) = match conversion {
-            'd' | 'i' => {
-                let sign = if value < 0 {
-                    "-"
-                } else if self.plus {
-                    "+"
-                } else if self.space {
-                    " "
-                } else {
-                    ""
-                };
-                (sign, value.unsigned_abs().to_string())
-            }
-            'o' => ("", format!("{bits:o}")),
-            'u' => ("", bits.to_string()),
-            'x' => ("", format!("{bits:x}")),
-            _ => ("", format!("{bits:X}")),
-        };
-        if let Some(precision) = self.precision {
-            if precision == 0 && value == 0 {
-                digits.clear();
-            }
-            while digits.len() < precision {
-                digits.insert(0, '0');
-            }
+        let mut magnitude = value as u64;
+        if !unsigned && value < 0 {
+            magnitude = value.unsigned_abs();
+            lead.push('-');
+        } else if self.plus {
+            lead.push('+');
+        } else if self.space {
+            lead.push(' ');
         }
-        let mut prefix = sign.to_owned();
+        // A zero has no digits of its own: the default precision of 1
+        // writes it.
+        let digits = match (magnitude, conversion) {
+            (0, _) => String::new(),
+            (_, 'o') => format!("{magnitude:o}"),
+            (_, 'x') => format!("{magnitude:x}"),
+            (_, 'X') => format!("{magnitude:X}"),
+            _ => magnitude.to_string(),
+        };
+        let precision = self.precision.unwrap_or(1);
         if self.alternate {
             match conversion {
-                'o' if !digits.starts_with('0') => digits.insert(0, '0'),
-                'x' if value != 0 => prefix.push_str("0x"),
-                'X' if value != 0 => prefix.push_str("0X"),
+                'x' => lead.push_str("0x"),
+                'X' => lead.push_str("0X"),
+                'o' if precision <= digits.len() => lead.push('0'),
                 _ => {}
             }
         }
-        let zero = self.zero && self.precision.is_none();
-        self.pad(prefix.into_bytes(), digits.into_bytes(), zero)
+        let zeros = precision.saturating_sub(digits.len());
+        let fill = self.width.saturating_sub(lead.len() + zeros + digits.len());
+        // `-` overrides `0`, and so does a precision.
+        let zero_fill = self.zero && !self.left && self.precision.is_none();
+        let mut out = Vec::with_capacity(fill + lead.len() + zeros + digits.len());
+        if !self.left && !zero_fill {
+            out.extend(std::iter::repeat_n(b' ', fill));
+        }
+        out.extend(lead.bytes());
+        if zero_fill {
+            out.extend(std::iter::repeat_n(b'0', fill));
+        }
+        out.extend(std::iter::repeat_n(b'0', zeros));
+        out.extend(digits.bytes());
+        if self.left {
+            out.extend(std::iter::repeat_n(b' ', fill));
+        }
+        out
     }
 
-    /// `body` after `prefix`, padded to the width in bytes.
-    fn pad(&self, prefix: Vec<u8>, body: Vec<u8>, zero: bool) -> Vec<u8> {
-        let fill = self.width.saturating_sub(prefix.len() + body.len());
-        let mut out = Vec::with_capacity(fill + prefix.len() + body.len());
+    /// `body` as `%s`, or a character as `%c`, as `xvsnprintf`'s
+    /// `FormatStr` writes it. The text stops at its first NUL byte and at
+    /// the precision. The width pads on the right, and on the left with `-`:
+    /// the reverse of C. `0` is ignored.
+    fn text(&self, mut body: Vec<u8>) -> Vec<u8> {
+        if let Some(end) = body.iter().position(|b| *b == 0) {
+            body.truncate(end);
+        }
+        if let Some(n) = self.precision {
+            body.truncate(n);
+        }
+        let fill = self.width.saturating_sub(body.len());
+        let mut out = Vec::with_capacity(fill + body.len());
         if self.left {
-            out.extend(prefix);
-            out.extend(body);
             out.extend(std::iter::repeat_n(b' ', fill));
-        } else if zero {
-            out.extend(prefix);
-            out.extend(std::iter::repeat_n(b'0', fill));
             out.extend(body);
         } else {
-            out.extend(std::iter::repeat_n(b' ', fill));
-            out.extend(prefix);
             out.extend(body);
+            out.extend(std::iter::repeat_n(b' ', fill));
         }
         out
     }
