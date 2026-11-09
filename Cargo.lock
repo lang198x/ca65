@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "asm198x-ir"
-version = "0.0.73"
+version = "0.0.75"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68b6ee09a85004bb166b4d36983736e64bf0424fcdc8278e1ea100488c1f2510"
+checksum = "56a062b30b27932a7bac16e713e60fcbfedba991ecba564084267a088cf25529"
 dependencies = [
  "isa198x",
  "serde",
